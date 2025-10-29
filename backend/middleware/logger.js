@@ -21,6 +21,22 @@ const log = {
     console.log(`📝 ${message}`);
   },
 
+  // ✅ 추가
+  info: (message) => {
+    const timestamp = new Date().toISOString();
+    const logMessage = `[${timestamp}] INFO: ${message}\n`;
+    fs.appendFileSync(accessLogPath, logMessage);
+    console.log(`ℹ️ ${message}`);
+  },
+
+  // (선택) 필요하면 경고/디버그도
+  warn: (message) => {
+    const timestamp = new Date().toISOString();
+    const logMessage = `[${timestamp}] WARN: ${message}\n`;
+    fs.appendFileSync(accessLogPath, logMessage);
+    console.warn(`⚠️ ${message}`);
+  },
+
   error: (message, error = null) => {
     const timestamp = new Date().toISOString();
     const logMessage = `[${timestamp}] ERROR: ${message}${error ? ` - ${error.message}` : ''}\n`;

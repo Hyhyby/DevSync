@@ -1,62 +1,69 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
+import { io } from 'socket.io-client';        // ✅ 추가
+
+const API_BASE = 'http://localhost:5000';     // ✅ 백엔드 주소 명시
 
 const Home = ({ user, onLogout }) => {
-  // ✅ 테스트용 기본 방 2개 설정
-  const [rooms, setRooms] = useState([
-    { id: 1, name: 'Room 1' },
-    { id: 2, name: 'Room 2' },
-  ]);
-
+  const [rooms, setRooms] = useState([]);
   const [newRoomName, setNewRoomName] = useState('');
   const [showCreateRoom, setShowCreateRoom] = useState(false);
   const navigate = useNavigate();
+  const socketRef = useRef(null);             // ✅ 소켓 보관
 
+  // 1) 최초 1회 목록 로드
   useEffect(() => {
-    fetchRooms();
+    const token = sessionStorage.getItem('token') || localStorage.getItem('token'); // ✅ sessionStorage 우선
+    axios.get(`${API_BASE}/api/rooms`, {
+      headers: { Authorization: `Bearer ${token}` }
+    })
+    .then(res => setRooms(Array.isArray(res.data) ? res.data : []))
+    .catch(() => {/* 무시 */});
   }, []);
 
-  const fetchRooms = async () => {
-    try {
-      const token = localStorage.getItem('token');
-      const response = await axios.get('/api/rooms', {
-        headers: { Authorization: `Bearer ${token}` }
-      });
+  // 2) 소켓 연결 & 실시간 업데이트
+  useEffect(() => {
+    const token = sessionStorage.getItem('token') || localStorage.getItem('token');
 
-      // ✅ 서버에서 방을 받아오면 기존 기본방에 덮어쓰기
-      if (Array.isArray(response.data) && response.data.length > 0) {
-        setRooms(response.data);
-      }
-    } catch (error) {
-      console.warn('No rooms fetched, using default rooms.');
-    }
-  };
+    socketRef.current = io(API_BASE, {
+      transports: ['websocket'],
+      auth: { token },                         // ✅ JWT 전달(서버에서 사용자 식별)
+    });
 
+    // 새 방이 생성되면 모든 클라이언트가 즉시 목록 갱신
+    socketRef.current.on('room-created', (newRoom) => {
+      setRooms(prev => prev.some(r => r.id === newRoom.id) ? prev : [...prev, newRoom]);
+    });
+
+    return () => {
+      socketRef.current?.disconnect();         // ✅ 중복 연결 방지
+    };
+  }, []);
+
+  // 3) 방 생성(내 화면은 즉시 갱신 + 소켓으로 상대방도 실시간)
   const createRoom = async (e) => {
     e.preventDefault();
     if (!newRoomName.trim()) return;
 
     try {
-      const token = localStorage.getItem('token');
-      const response = await axios.post(
-        '/api/rooms',
+      const token = sessionStorage.getItem('token') || localStorage.getItem('token');
+      const { data } = await axios.post(
+        `${API_BASE}/api/rooms`,               // ✅ 절대주소 사용 (socket과 동일 오리진)
         { name: newRoomName },
         { headers: { Authorization: `Bearer ${token}` } }
       );
 
-      setRooms([...rooms, response.data]);
+      // 낙관적 업데이트(내 화면은 즉시)
+      setRooms(prev => prev.some(r => r.id === data.id) ? prev : [...prev, data]);
       setNewRoomName('');
       setShowCreateRoom(false);
-    } catch (error) {
-      console.error('Failed to create room:', error);
+    } catch (err) {
+      console.error('Failed to create room:', err);
     }
   };
 
-  const joinRoom = (roomId) => {
-    navigate(`/chat/${roomId}`);
-  };
-
+  const joinRoom = (roomId) => navigate(`/chat/${roomId}`);
   return (
     <div className="min-h-screen bg-discord-darkest flex">
       {/* Sidebar */}

@@ -2,106 +2,179 @@ const express = require('express');
 const http = require('http');
 const socketIo = require('socket.io');
 const cors = require('cors');
+const jwt = require('jsonwebtoken');
+const bcrypt = require('bcryptjs');
+const { v4: uuidv4 } = require('uuid');
 const { log, requestLogger, socketLogger, errorHandler } = require('./middleware/logger');
+require('dotenv').config();
 
+const ALLOWED_ORIGINS = [
+  'http://localhost:3000',
+  'http://localhost:5173',
+  'http://192.168.0.12:3000', // 서버 PC IP로 교체
+  'http://192.168.0.12:5173'  // 서버 PC IP로 교체
+];
 const app = express();
 const server = http.createServer(app);
 const io = socketIo(server, {
   cors: {
-    origin: ["http://localhost:3000", "file://"], // 웹 + Electron 지원
-    methods: ["GET", "POST"],
-    credentials: true
+    origin: ALLOWED_ORIGINS,
+    methods: ["GET", "POST"]
   }
 });
 
 const PORT = process.env.PORT || 5000;
+const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
 
 // Middleware
-app.use(cors());
+app.use(cors({
+  origin: [
+    'http://localhost:3000',
+    'http://localhost:5173'
+  ],
+  credentials: true
+}));
 app.use(express.json());
-app.use(requestLogger);
+app.use(requestLogger); // 요청 로깅 미들웨어 추가
 
-// In-memory room storage
-// { roomName: [ { id: socket.id, nickname } ] }
-const rooms = {};
+// In-memory storage (replace with database in production)
+const users = [];
+const rooms = [];
 
-// ✅ 방 목록 조회
-app.get('/api/rooms', (req, res) => {
-  const roomList = Object.keys(rooms).map(roomName => ({
-    name: roomName,
-    participants: rooms[roomName].length
-  }));
-  res.json(roomList);
+// Auth middleware
+const authenticateToken = (req, res, next) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+
+  if (!token) {
+    return res.sendStatus(401);
+  }
+
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) return res.sendStatus(403);
+    req.user = user;
+    next();
+  });
+};
+
+// Routes
+app.post('/api/register', async (req, res) => {
+  try {
+    const { username, password } = req.body;
+    
+    // Check if user already exists
+    const existingUser = users.find(u => u.username === username);
+    if (existingUser) {
+      log.user('REGISTER_FAILED', username, '- User already exists');
+      return res.status(400).json({ error: 'User already exists' });
+    }
+
+    // Hash password
+    const hashedPassword = await bcrypt.hash(password, 10);
+    
+    // Create user
+    const user = {
+      id: uuidv4(),
+      username,
+      password: hashedPassword
+    };
+    
+    users.push(user);
+    
+    // Generate JWT
+    const token = jwt.sign({ userId: user.id, username: user.username }, JWT_SECRET);
+    
+    log.user('REGISTER_SUCCESS', username, `- ID: ${user.id}`);
+    res.json({ token, user: { id: user.id, username: user.username } });
+  } catch (error) {
+    log.error('Register Error', error);
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
-// ✅ 방 생성 (중복 이름 방지)
-app.post('/api/rooms', (req, res) => {
+app.post('/api/login', async (req, res) => {
+  try {
+    const { username, password } = req.body;
+    
+    // Find user
+    const user = users.find(u => u.username === username);
+    if (!user) {
+      log.user('LOGIN_FAILED', username, '- User not found');
+      return res.status(400).json({ error: 'Invalid credentials' });
+    }
+
+    // Check password
+    const validPassword = await bcrypt.compare(password, user.password);
+    if (!validPassword) {
+      log.user('LOGIN_FAILED', username, '- Invalid password');
+      return res.status(400).json({ error: 'Invalid credentials' });
+    }
+
+    // Generate JWT
+    const token = jwt.sign({ userId: user.id, username: user.username }, JWT_SECRET);
+    
+    log.user('LOGIN_SUCCESS', username, `- ID: ${user.id}`);
+    res.json({ token, user: { id: user.id, username: user.username } });
+  } catch (error) {
+    log.error('Login Error', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.get('/api/rooms', authenticateToken, (req, res) => {
+  res.json(rooms);
+});
+
+app.post('/api/rooms', authenticateToken, (req, res) => {
   const { name } = req.body;
-  if (rooms[name]) return res.status(400).json({ error: 'Room already exists' });
-  rooms[name] = [];
-  log.info(`Room created: ${name}`);
-  res.json({ name });
+  const room = {
+    id: uuidv4(),
+    name,
+    createdBy: req.user.userId
+  };
+  rooms.push(room);
+  io.emit('room-created', room);
+  res.json(room);
 });
 
-// ✅ Socket.io 통신 (채팅 전용)
+// Socket.io connection handling
 io.on('connection', (socket) => {
-  console.log(`🟢 User connected: ${socket.id}`);
-  socketLogger(socket);
-
-  // 방 참가
-  socket.on("join room", ({ roomName, nickname }) => {
-    socket.join(roomName);
-    if (!rooms[roomName]) rooms[roomName] = [];
-    rooms[roomName].push({ id: socket.id, nickname });
-
-    console.log(`${nickname} (${socket.id}) joined room: ${roomName}`);
-    io.to(roomName).emit("system message", `${nickname} joined the room`);
-    io.to(roomName).emit("room users", rooms[roomName].map(u => u.nickname));
+  socketLogger(socket); // 소켓 로깅 추가
+  
+  socket.on('join-room', (roomId) => {
+    socket.join(roomId);
+    log.connection('JOINED_ROOM', socket.id, `Room: ${roomId}`);
   });
 
-  // 채팅 메시지 송신
-  socket.on("chat message", ({ roomName, message }) => {
-    const user = rooms[roomName]?.find(u => u.id === socket.id);
-    if (user) {
-      console.log(`[${roomName}] ${user.nickname}: ${message}`);
-      io.to(roomName).emit("chat message", { nickname: user.nickname, message });
-    }
+  socket.on('send-message', (data) => {
+    const message = {
+   id: uuidv4(),
+   message: data.message,   // ✅ message로 통일
+   userId: data.userId,
+   username: data.username,
+   timestamp: new Date()
+ };
+    
+    log.access(`MESSAGE_SENT - User: ${data.username}, Room: ${data.roomId}, Message: ${data.message.substring(0, 50)}...`);
+    socket.to(data.roomId).emit('receive-message', message);
   });
 
-  // 방 나가기
-  socket.on("leave room", (roomName) => {
-    const userIndex = rooms[roomName]?.findIndex(u => u.id === socket.id);
-    if (userIndex !== undefined && userIndex !== -1) {
-      const user = rooms[roomName][userIndex];
-      rooms[roomName].splice(userIndex, 1);
-      io.to(roomName).emit("system message", `${user.nickname} left the room`);
-      io.to(roomName).emit("room users", rooms[roomName].map(u => u.nickname));
-      if (rooms[roomName].length === 0) delete rooms[roomName];
-    }
-    socket.leave(roomName);
+  socket.on('webrtc-signal', (data) => {
+    log.connection('WEBRTC_SIGNAL', socket.id, `Room: ${data.roomId}`);
+    socket.to(data.roomId).emit('webrtc-signal', {
+      signal: data.signal,
+      from: socket.id
+    });
   });
 
-  // 연결 종료
-  socket.on("disconnect", () => {
-    console.log(`🔴 User disconnected: ${socket.id}`);
-    for (const roomName in rooms) {
-      const userIndex = rooms[roomName]?.findIndex(u => u.id === socket.id);
-      if (userIndex !== undefined && userIndex !== -1) {
-        const user = rooms[roomName][userIndex];
-        rooms[roomName].splice(userIndex, 1);
-        io.to(roomName).emit("system message", `${user.nickname} disconnected`);
-        io.to(roomName).emit("room users", rooms[roomName].map(u => u.nickname));
-        if (rooms[roomName].length === 0) delete rooms[roomName];
-      }
-    }
+  socket.on('disconnect', (reason) => {
+    log.connection('DISCONNECTED', socket.id, `Reason: ${reason}`);
   });
 });
 
-// 오류 처리 미들웨어
+// 오류 처리 미들웨어 추가
 app.use(errorHandler);
-
-// 서버 실행
-server.listen(PORT, () => {
-  console.log(`🚀 Chat server running on port ${PORT}`);
+server.listen(PORT, '0.0.0.0',() => {
+  console.log(`🚀 Server running on port ${PORT}`);
   log.access(`Server started on port ${PORT}`);
 });

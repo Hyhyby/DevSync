@@ -1,44 +1,72 @@
 import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import io from 'socket.io-client';
+import { io } from 'socket.io-client';
+
+const API_BASE = 'http://localhost:5000'; // 백엔드 주소
 
 const Chat = ({ user }) => {
   const { roomId } = useParams();
   const navigate = useNavigate();
   const [messages, setMessages] = useState([]);
-  const [newMessage, setNewMessage] = useState('');
+  const [input, setInput] = useState('');
   const socketRef = useRef(null);
   const messagesEndRef = useRef(null);
 
+  // ✅ 소켓 연결
   useEffect(() => {
-    const socket = io('http://localhost:5000');
+    const token = sessionStorage.getItem('token');
+    const socket = io(API_BASE, {
+      transports: ['websocket'],
+      auth: { token },
+    });
+
     socketRef.current = socket;
 
-    socket.emit('join room', { roomName: roomId, nickname: user.username });
+    // 방 입장
+    socket.emit('join-room', roomId);
 
-    socket.on('chat message', (message) => {
-      setMessages((prev) => [...prev, message]);
+    // 메시지 수신
+    socket.on('receive-message', (msg) => {
+      setMessages((prev) => [...prev, msg]);
     });
 
-    socket.on('system message', (message) => {
-      setMessages((prev) => [...prev, { system: true, text: message }]);
-    });
-
+    // 연결 종료 시 정리
     return () => {
       socket.disconnect();
     };
-  }, [roomId, user.username]);
+  }, [roomId]);
 
+  // 스크롤 항상 맨 아래로 유지
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
+  // 메시지 전송
   const sendMessage = (e) => {
     e.preventDefault();
-    if (!newMessage.trim()) return;
+    if (!input.trim()) return;
 
-    socketRef.current.emit('chat message', { roomName: roomId, message: newMessage });
-    setNewMessage('');
+    const messageData = {
+      roomId,
+      message: input,
+      userId: user.id,
+      username: user.username,
+    };
+
+    // ✅ 서버로 전송
+    socketRef.current.emit('send-message', messageData);
+
+    // ✅ 내 메시지를 즉시 반영
+    setMessages((prev) => [
+      ...prev,
+      {
+        ...messageData,
+        id: Date.now(),
+        timestamp: new Date(),
+      },
+    ]);
+
+    setInput('');
   };
 
   return (
@@ -59,15 +87,7 @@ const Chat = ({ user }) => {
         {/* Messages */}
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
           {messages.map((msg, index) => {
-            if (msg.system) {
-              return (
-                <div key={index} className="text-center text-gray-400 text-sm">
-                  {msg.text}
-                </div>
-              );
-            }
-
-            const isOwn = msg.nickname === user.username;
+            const isOwn = msg.username === user.username;
 
             return (
               <div
@@ -76,20 +96,33 @@ const Chat = ({ user }) => {
                   isOwn ? 'justify-end' : 'justify-start'
                 }`}
               >
+                {/* 상대 메시지 */}
                 {!isOwn && (
                   <div className="w-8 h-8 bg-discord-blurple rounded-full flex items-center justify-center text-white text-sm font-semibold">
-                    {msg.nickname.charAt(0).toUpperCase()}
+                    {msg.username?.charAt(0).toUpperCase()}
                   </div>
                 )}
-                <div className={`${isOwn ? 'bg-discord-blurple text-white' : 'bg-discord-darkest text-gray-300'} p-3 rounded-lg max-w-xs break-words`}>
+
+                {/* 말풍선 */}
+                <div
+                  className={`p-3 rounded-lg max-w-xs break-words ${
+                    isOwn
+                      ? 'bg-discord-blurple text-white text-right'
+                      : 'bg-discord-darkest text-gray-300 text-left'
+                  }`}
+                >
                   {!isOwn && (
-                    <div className="text-sm font-semibold text-white mb-1">{msg.nickname}</div>
+                    <div className="text-sm font-semibold text-white mb-1">
+                      {msg.username}
+                    </div>
                   )}
-                  <div className={isOwn ? 'text-right' : 'text-left'}>{msg.message}</div>
+                  <div>{msg.message}</div>
                 </div>
+
+                {/* 내 메시지 */}
                 {isOwn && (
                   <div className="w-8 h-8 bg-discord-blurple rounded-full flex items-center justify-center text-white text-sm font-semibold">
-                    {msg.nickname.charAt(0).toUpperCase()}
+                    {msg.username?.charAt(0).toUpperCase()}
                   </div>
                 )}
               </div>
@@ -98,24 +131,25 @@ const Chat = ({ user }) => {
           <div ref={messagesEndRef} />
         </div>
 
-        {/* Message Input */}
-        <div className="p-4 border-t border-discord-dark">
-          <form onSubmit={sendMessage} className="flex space-x-2">
-            <input
-              type="text"
-              value={newMessage}
-              onChange={(e) => setNewMessage(e.target.value)}
-              placeholder="Type a message..."
-              className="flex-1 p-3 bg-discord-dark border border-gray-600 rounded text-white placeholder-gray-400 focus:outline-none focus:border-discord-blurple"
-            />
-            <button
-              type="submit"
-              className="px-6 py-3 bg-discord-blurple hover:bg-blue-600 rounded text-white font-semibold"
-            >
-              Send
-            </button>
-          </form>
-        </div>
+        {/* 입력창 */}
+        <form
+          onSubmit={sendMessage}
+          className="p-4 border-t border-discord-dark flex space-x-2"
+        >
+          <input
+            type="text"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            placeholder="Type a message..."
+            className="flex-1 p-3 bg-discord-dark border border-gray-600 rounded text-white placeholder-gray-400 focus:outline-none focus:border-discord-blurple"
+          />
+          <button
+            type="submit"
+            className="px-6 py-3 bg-discord-blurple hover:bg-blue-600 rounded text-white font-semibold"
+          >
+            Send
+          </button>
+        </form>
       </div>
     </div>
   );
