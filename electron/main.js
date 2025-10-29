@@ -17,7 +17,6 @@ function createWindow() {
 
   if (isDev) {
     win.loadURL('http://localhost:3000');
-    win.webContents.openDevTools();
   } else {
     win.loadFile(path.join(__dirname, '../frontend/dist/index.html'));
   }

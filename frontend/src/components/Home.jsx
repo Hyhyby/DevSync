@@ -3,7 +3,12 @@ import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 
 const Home = ({ user, onLogout }) => {
-  const [rooms, setRooms] = useState([]);
+  // ✅ 테스트용 기본 방 2개 설정
+  const [rooms, setRooms] = useState([
+    { id: 1, name: 'Room 1' },
+    { id: 2, name: 'Room 2' },
+  ]);
+
   const [newRoomName, setNewRoomName] = useState('');
   const [showCreateRoom, setShowCreateRoom] = useState(false);
   const navigate = useNavigate();
@@ -18,9 +23,13 @@ const Home = ({ user, onLogout }) => {
       const response = await axios.get('/api/rooms', {
         headers: { Authorization: `Bearer ${token}` }
       });
-      setRooms(response.data);
+
+      // ✅ 서버에서 방을 받아오면 기존 기본방에 덮어쓰기
+      if (Array.isArray(response.data) && response.data.length > 0) {
+        setRooms(response.data);
+      }
     } catch (error) {
-      console.error('Failed to fetch rooms:', error);
+      console.warn('No rooms fetched, using default rooms.');
     }
   };
 
@@ -30,11 +39,12 @@ const Home = ({ user, onLogout }) => {
 
     try {
       const token = localStorage.getItem('token');
-      const response = await axios.post('/api/rooms', 
+      const response = await axios.post(
+        '/api/rooms',
         { name: newRoomName },
         { headers: { Authorization: `Bearer ${token}` } }
       );
-      
+
       setRooms([...rooms, response.data]);
       setNewRoomName('');
       setShowCreateRoom(false);
@@ -55,7 +65,7 @@ const Home = ({ user, onLogout }) => {
           <h1 className="text-white text-xl font-bold">Discord Clone</h1>
           <p className="text-gray-400 text-sm">Welcome, {user.username}</p>
         </div>
-        
+
         <div className="flex-1 p-4">
           <div className="flex justify-between items-center mb-4">
             <h2 className="text-white font-semibold">Rooms</h2>
@@ -66,7 +76,7 @@ const Home = ({ user, onLogout }) => {
               +
             </button>
           </div>
-          
+
           {showCreateRoom && (
             <form onSubmit={createRoom} className="mb-4">
               <input
@@ -79,7 +89,7 @@ const Home = ({ user, onLogout }) => {
               />
             </form>
           )}
-          
+
           <div className="space-y-2">
             {rooms.map((room) => (
               <button
@@ -92,7 +102,7 @@ const Home = ({ user, onLogout }) => {
             ))}
           </div>
         </div>
-        
+
         <div className="p-4 border-t border-discord-dark">
           <button
             onClick={onLogout}
@@ -102,12 +112,16 @@ const Home = ({ user, onLogout }) => {
           </button>
         </div>
       </div>
-      
+
       {/* Main Content */}
       <div className="flex-1 flex items-center justify-center">
         <div className="text-center">
-          <h2 className="text-2xl font-bold text-white mb-4">Welcome to Discord Clone</h2>
-          <p className="text-gray-400 mb-8">Select a room from the sidebar to start chatting</p>
+          <h2 className="text-2xl font-bold text-white mb-4">
+            Welcome to Discord Clone
+          </h2>
+          <p className="text-gray-400 mb-8">
+            Select a room from the sidebar to start chatting
+          </p>
           <div className="text-gray-500">
             <p>Features:</p>
             <ul className="mt-2 space-y-1">

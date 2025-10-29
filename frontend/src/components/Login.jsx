@@ -1,8 +1,7 @@
 import { useState } from 'react';
-import axios from 'axios';
+// import axios from 'axios'; // 추후 인증 로직용
 
 const Login = ({ onLogin }) => {
-  const [isLogin, setIsLogin] = useState(true);
   const [formData, setFormData] = useState({
     username: '',
     password: ''
@@ -19,16 +18,21 @@ const Login = ({ onLogin }) => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    setLoading(true);
     setError('');
+    setLoading(true);
 
     try {
-      const endpoint = isLogin ? '/api/login' : '/api/register';
-      const response = await axios.post(endpoint, formData);
-      
+      // ===============================
+      // 테스트용: 입력값 그대로 로그인
+      // 추후 실제 인증 로직을 여기에 넣으면 됩니다
+      // ===============================
+      /*
+      const response = await axios.post('/api/login', formData);
       onLogin(response.data.user, response.data.token);
+      */
+      onLogin({ username: formData.username, id: formData.username }, 'test-token');
     } catch (err) {
-      setError(err.response?.data?.error || 'An error occurred');
+      setError('An error occurred'); // 추후 서버 에러 메시지 처리 가능
     } finally {
       setLoading(false);
     }
@@ -39,26 +43,17 @@ const Login = ({ onLogin }) => {
       <div className="max-w-md w-full space-y-8 p-8">
         <div>
           <h2 className="mt-6 text-center text-3xl font-extrabold text-white">
-            {isLogin ? 'Sign in to your account' : 'Create your account'}
+            Sign in (Test Mode)
           </h2>
           <p className="mt-2 text-center text-sm text-gray-400">
-            {isLogin ? "Don't have an account? " : "Already have an account? "}
-            <button
-              type="button"
-              onClick={() => setIsLogin(!isLogin)}
-              className="font-medium text-discord-blurple hover:text-blue-300"
-            >
-              {isLogin ? 'Sign up' : 'Sign in'}
-            </button>
+            추후 인증 기능 적용 가능
           </p>
         </div>
         
         <form className="mt-8 space-y-6" onSubmit={handleSubmit}>
           <div className="rounded-md shadow-sm -space-y-px">
             <div>
-              <label htmlFor="username" className="sr-only">
-                Username
-              </label>
+              <label htmlFor="username" className="sr-only">Username</label>
               <input
                 id="username"
                 name="username"
@@ -71,9 +66,7 @@ const Login = ({ onLogin }) => {
               />
             </div>
             <div>
-              <label htmlFor="password" className="sr-only">
-                Password
-              </label>
+              <label htmlFor="password" className="sr-only">Password</label>
               <input
                 id="password"
                 name="password"
@@ -97,7 +90,7 @@ const Login = ({ onLogin }) => {
               disabled={loading}
               className="group relative w-full flex justify-center py-2 px-4 border border-transparent text-sm font-medium rounded-md text-white bg-discord-blurple hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-discord-blurple disabled:opacity-50"
             >
-              {loading ? 'Loading...' : (isLogin ? 'Sign in' : 'Sign up')}
+              {loading ? 'Loading...' : 'Login'}
             </button>
           </div>
         </form>

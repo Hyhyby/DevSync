@@ -6,9 +6,6 @@ contextBridge.exposeInMainWorld('electron', {
   resizeWindow: (width, height) => {
     ipcRenderer.invoke('window-resize', width, height);
   },
-  toggleDevTools: () => {
-    ipcRenderer.invoke('toggle-dev-tools');
-  },
 
   // 환경 정보
   getPlatform: () => process.platform,
