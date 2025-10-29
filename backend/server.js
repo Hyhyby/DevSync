@@ -141,19 +141,34 @@ app.post('/api/rooms', authenticateToken, (req, res) => {
 io.on('connection', (socket) => {
   socketLogger(socket); // 소켓 로깅 추가
   
-  socket.on('join-room', (roomId) => {
+  socket.on('join-room', (payload) => {
+    const roomId = typeof payload === 'string' ? payload : payload?.roomId;
+    const username = typeof payload === 'string' ? '알 수 없음' : payload?.username || '알 수 없음';
+    if (!roomId) return;
+
     socket.join(roomId);
-    log.connection('JOINED_ROOM', socket.id, `Room: ${roomId}`);
+    log.connection('JOINED_ROOM', socket.id, `Room: ${roomId} / User: ${username}`);
+
+    // 시스템 알림 메시지 (같은 receive-message 채널 사용)
+    const systemMsg = {
+      id: uuidv4(),
+      message: `${username}님이 들어왔습니다.`,
+      userId: 'system',
+      username: 'System',
+      timestamp: new Date(),
+      isSystem: true
+    };
+    io.to(roomId).emit('receive-message', systemMsg);
   });
 
   socket.on('send-message', (data) => {
     const message = {
-   id: uuidv4(),
-   message: data.message,   // ✅ message로 통일
-   userId: data.userId,
-   username: data.username,
-   timestamp: new Date()
- };
+      id: uuidv4(),
+      message: data.message,   // ✅ message로 통일
+      userId: data.userId,
+      username: data.username,
+      timestamp: new Date()
+    };
     
     log.access(`MESSAGE_SENT - User: ${data.username}, Room: ${data.roomId}, Message: ${data.message.substring(0, 50)}...`);
     socket.to(data.roomId).emit('receive-message', message);

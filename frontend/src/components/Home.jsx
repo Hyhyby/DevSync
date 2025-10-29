@@ -1,134 +1,197 @@
-import { useState, useEffect, useRef } from 'react';
+// src/pages/Home.jsx
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
-import { io } from 'socket.io-client';        // ✅ 추가
+import { io } from 'socket.io-client';
+import logo from '../../assets/devsync-logo.png';
 
-const API_BASE = 'http://localhost:5000';     // ✅ 백엔드 주소 명시
+// .env 예) VITE_API_BASE=http://localhost:5000
+const API_BASE = import.meta?.env?.VITE_API_BASE || 'http://localhost:5000';
 
 const Home = ({ user, onLogout }) => {
   const [rooms, setRooms] = useState([]);
   const [newRoomName, setNewRoomName] = useState('');
   const [showCreateRoom, setShowCreateRoom] = useState(false);
+  const [loadingRooms, setLoadingRooms] = useState(true);
   const navigate = useNavigate();
-  const socketRef = useRef(null);             // ✅ 소켓 보관
+  const socketRef = useRef(null);
+
+  const token = useMemo(
+    () => sessionStorage.getItem('token') || localStorage.getItem('token'),
+    []
+  );
+
+  const api = useMemo(
+    () =>
+      axios.create({
+        baseURL: API_BASE,
+        headers: { Authorization: `Bearer ${token}` },
+      }),
+    [token]
+  );
 
   // 1) 최초 1회 목록 로드
   useEffect(() => {
-    const token = sessionStorage.getItem('token') || localStorage.getItem('token'); // ✅ sessionStorage 우선
-    axios.get(`${API_BASE}/api/rooms`, {
-      headers: { Authorization: `Bearer ${token}` }
-    })
-    .then(res => setRooms(Array.isArray(res.data) ? res.data : []))
-    .catch(() => {/* 무시 */});
-  }, []);
+    let mounted = true;
+    (async () => {
+      try {
+        const res = await api.get('/api/rooms');
+        if (!mounted) return;
+        setRooms(Array.isArray(res.data) ? res.data : []);
+      } catch {
+        // 필요시 에러 토스트
+      } finally {
+        if (mounted) setLoadingRooms(false);
+      }
+    })();
+    return () => {
+      mounted = false;
+    };
+  }, [api]);
 
   // 2) 소켓 연결 & 실시간 업데이트
   useEffect(() => {
-    const token = sessionStorage.getItem('token') || localStorage.getItem('token');
+    if (!token) return;
 
     socketRef.current = io(API_BASE, {
       transports: ['websocket'],
-      auth: { token },                         // ✅ JWT 전달(서버에서 사용자 식별)
+      auth: { token },
     });
 
-    // 새 방이 생성되면 모든 클라이언트가 즉시 목록 갱신
+    // 새 방 생성 실시간 반영
     socketRef.current.on('room-created', (newRoom) => {
-      setRooms(prev => prev.some(r => r.id === newRoom.id) ? prev : [...prev, newRoom]);
+      setRooms((prev) =>
+        prev.some((r) => r.id === newRoom.id) ? prev : [...prev, newRoom]
+      );
+    });
+
+    // 방 이름 변경, 삭제 같은 이벤트도 대비(서버가 보내면)
+    socketRef.current.on('room-updated', (room) => {
+      setRooms((prev) => prev.map((r) => (r.id === room.id ? room : r)));
+    });
+    socketRef.current.on('room-deleted', (roomId) => {
+      setRooms((prev) => prev.filter((r) => r.id !== roomId));
     });
 
     return () => {
-      socketRef.current?.disconnect();         // ✅ 중복 연결 방지
+      socketRef.current?.disconnect();
     };
-  }, []);
+  }, [token]);
 
-  // 3) 방 생성(내 화면은 즉시 갱신 + 소켓으로 상대방도 실시간)
-  const createRoom = async (e) => {
-    e.preventDefault();
-    if (!newRoomName.trim()) return;
-
-    try {
-      const token = sessionStorage.getItem('token') || localStorage.getItem('token');
-      const { data } = await axios.post(
-        `${API_BASE}/api/rooms`,               // ✅ 절대주소 사용 (socket과 동일 오리진)
-        { name: newRoomName },
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
-
-      // 낙관적 업데이트(내 화면은 즉시)
-      setRooms(prev => prev.some(r => r.id === data.id) ? prev : [...prev, data]);
-      setNewRoomName('');
-      setShowCreateRoom(false);
-    } catch (err) {
-      console.error('Failed to create room:', err);
-    }
-  };
+  // 3) 방 생성
+  const createRoom = useCallback(
+    async (e) => {
+      e.preventDefault();
+      if (!newRoomName.trim()) return;
+      try {
+        const { data } = await api.post('/api/rooms', { name: newRoomName });
+        setRooms((prev) =>
+          prev.some((r) => r.id === data.id) ? prev : [...prev, data]
+        );
+        setNewRoomName('');
+        setShowCreateRoom(false);
+      } catch (err) {
+        console.error('Failed to create room:', err?.response?.data || err);
+      }
+    },
+    [api, newRoomName]
+  );
 
   const joinRoom = (roomId) => navigate(`/chat/${roomId}`);
+
   return (
-    <div className="min-h-screen bg-discord-darkest flex">
+    <div className="min-h-screen bg-black flex">
       {/* Sidebar */}
-      <div className="w-64 bg-discord-darker flex flex-col">
-        <div className="p-4 border-b border-discord-dark">
-          <h1 className="text-white text-xl font-bold">Discord Clone</h1>
-          <p className="text-gray-400 text-sm">Welcome, {user.username}</p>
+      <aside className="w-64 bg-neutral-900 flex flex-col border-r border-neutral-800">
+        <div className="p-4 border-b border-neutral-800">
+          {/* ✅ 로고 + 타이틀 (Discord Clone → DevSync 로고) */}
+          <div className="flex items-center gap-3">
+            <img
+              src={logo}
+              alt="DevSync Logo"
+              className="w-10 h-10 object-contain drop-shadow-[0_0_6px_#F9E4BC]"
+            />
+            <div>
+              <p className="text-gray-400 text-xs">
+                Welcome, {user?.username}
+              </p>
+            </div>
+          </div>
         </div>
 
-        <div className="flex-1 p-4">
-          <div className="flex justify-between items-center mb-4">
+        <div className="flex-1 p-4 space-y-3">
+          <div className="flex justify-between items-center">
             <h2 className="text-white font-semibold">Rooms</h2>
             <button
-              onClick={() => setShowCreateRoom(!showCreateRoom)}
-              className="text-discord-blurple hover:text-blue-300 text-xl"
+              onClick={() => setShowCreateRoom((v) => !v)}
+              className="text-yellow-400 hover:text-yellow-300 text-xl"
+              aria-label="Create room"
+              title="Create room"
             >
               +
             </button>
           </div>
 
           {showCreateRoom && (
-            <form onSubmit={createRoom} className="mb-4">
+            <form onSubmit={createRoom} className="mb-2">
               <input
                 type="text"
                 value={newRoomName}
                 onChange={(e) => setNewRoomName(e.target.value)}
                 placeholder="Room name"
-                className="w-full p-2 bg-discord-dark border border-gray-600 rounded text-white placeholder-gray-400 focus:outline-none focus:border-discord-blurple"
+                className="w-full p-2 bg-neutral-800 border border-neutral-700 rounded text-white placeholder-gray-400 focus:outline-none focus:border-yellow-400"
                 autoFocus
               />
             </form>
           )}
 
-          <div className="space-y-2">
-            {rooms.map((room) => (
-              <button
-                key={room.id}
-                onClick={() => joinRoom(room.id)}
-                className="w-full text-left p-2 rounded hover:bg-discord-dark text-gray-300 hover:text-white transition-colors"
-              >
-                # {room.name}
-              </button>
-            ))}
+          {/* 방 목록 */}
+          <div className="space-y-1">
+            {loadingRooms ? (
+              <div className="text-gray-500 text-sm">Loading rooms…</div>
+            ) : rooms.length === 0 ? (
+              <div className="text-gray-500 text-sm">
+                No rooms yet. Click <span className="text-yellow-400">+</span> to create one.
+              </div>
+            ) : (
+              rooms.map((room) => (
+                <button
+                  key={room.id}
+                  onClick={() => joinRoom(room.id)}
+                  className="w-full text-left p-2 rounded hover:bg-neutral-800 text-gray-300 hover:text-white transition-colors"
+                >
+                  # {room.name}
+                </button>
+              ))
+            )}
           </div>
         </div>
 
-        <div className="p-4 border-t border-discord-dark">
+        <div className="p-4 border-t border-neutral-800">
           <button
             onClick={onLogout}
-            className="w-full p-2 bg-discord-red hover:bg-red-600 rounded text-white transition-colors"
+            className="w-full p-2 bg-red-600 hover:bg-red-500 rounded text-white transition-colors"
           >
             Logout
           </button>
         </div>
-      </div>
+      </aside>
 
       {/* Main Content */}
-      <div className="flex-1 flex items-center justify-center">
+      <main className="flex-1 flex items-center justify-center">
         <div className="text-center">
-          <h2 className="text-2xl font-bold text-white mb-4">
-            Welcome to Discord Clone
-          </h2>
-          <p className="text-gray-400 mb-8">
+          {/* ✅ 메인 히어로에 로고 재사용 */}
+          <img
+            src={logo}
+            alt="DevSync Logo"
+            className="w-40 h-auto mx-auto mb-4 drop-shadow-[0_0_8px_#F9E4BC]"
+          />
+  
+
+          <p className="text-gray-400 mb-6">
             Select a room from the sidebar to start chatting
           </p>
+
           <div className="text-gray-500">
             <p>Features:</p>
             <ul className="mt-2 space-y-1">
@@ -139,7 +202,7 @@ const Home = ({ user, onLogout }) => {
             </ul>
           </div>
         </div>
-      </div>
+      </main>
     </div>
   );
 };

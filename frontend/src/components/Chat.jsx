@@ -23,7 +23,7 @@ const Chat = ({ user }) => {
     socketRef.current = socket;
 
     // 방 입장
-    socket.emit('join-room', roomId);
+    socket.emit('join-room', { roomId, username: user.username });
 
     // 메시지 수신
     socket.on('receive-message', (msg) => {
