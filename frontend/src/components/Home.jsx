@@ -5,93 +5,123 @@ import axios from 'axios';
 import { io } from 'socket.io-client';
 import logo from '../../assets/devsync-logo.png';
 
-// .env 예) VITE_API_BASE=http://localhost:5000
-const API_BASE = import.meta?.env?.VITE_API_BASE || 'http://localhost:5000';
+// 모두 같은 ngrok 백엔드로 통일
+const API_BASE = "https://commensurately-preflagellate-merissa.ngrok-free.dev";
 
 const Home = ({ user, onLogout }) => {
-  const [rooms, setRooms] = useState([]);
+  // 로컬 캐시 복구로 깜빡임 최소화
+  const [rooms, setRooms] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('rooms') || '[]'); }
+    catch { return []; }
+  });
   const [newRoomName, setNewRoomName] = useState('');
   const [showCreateRoom, setShowCreateRoom] = useState(false);
   const [loadingRooms, setLoadingRooms] = useState(true);
   const navigate = useNavigate();
   const socketRef = useRef(null);
 
-  const token = useMemo(
-    () => sessionStorage.getItem('token') || localStorage.getItem('token'),
-    []
-  );
+  // 매 렌더마다 최신 토큰을 사용 (useMemo([])로 고정하지 않음)
+  const token = sessionStorage.getItem('token') || localStorage.getItem('token');
 
+  // CORS 환경에서 인증 안정화를 위해 withCredentials 추가
   const api = useMemo(
     () =>
       axios.create({
         baseURL: API_BASE,
         headers: { Authorization: `Bearer ${token}` },
+        withCredentials: true,
+        timeout: 15000,
       }),
     [token]
   );
 
-  // 1) 최초 1회 목록 로드
-  useEffect(() => {
-    let mounted = true;
-    (async () => {
-      try {
-        const res = await api.get('/api/rooms');
-        if (!mounted) return;
-        setRooms(Array.isArray(res.data) ? res.data : []);
-      } catch {
-        // 필요시 에러 토스트
-      } finally {
-        if (mounted) setLoadingRooms(false);
-      }
-    })();
-    return () => {
-      mounted = false;
-    };
+  // /api/rooms 공통 로더
+  const fetchRooms = useCallback(async () => {
+    try {
+      const res = await api.get('/api/rooms');
+      console.log('[API] /api/rooms status:', res.status, res.data);
+      setRooms(Array.isArray(res.data) ? res.data : []);
+    } catch (err) {
+      console.error('[API] /api/rooms 실패:', err?.response?.status, err?.response?.data || err?.message);
+    } finally {
+      setLoadingRooms(false);
+    }
   }, [api]);
 
-  // 2) 소켓 연결 & 실시간 업데이트
+  // 최초 로드
+  useEffect(() => {
+    fetchRooms();
+  }, [fetchRooms]);
+
+  // 창 포커스 돌아올 때 최신 목록 싱크
+  useEffect(() => {
+    const onFocus = () => fetchRooms();
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [fetchRooms]);
+
+  // rooms 로컬 캐시 동기화
+  useEffect(() => {
+    localStorage.setItem('rooms', JSON.stringify(rooms));
+  }, [rooms]);
+
+  // 소켓 연결 & 실시간 업데이트
   useEffect(() => {
     if (!token) return;
 
-    socketRef.current = io(API_BASE, {
+    const s = io(API_BASE, {
       transports: ['websocket'],
       auth: { token },
+      // withCredentials는 socket.io에선 헤더·쿠키 자동 처리, 필요 시 path 동일하게 맞춰 사용
+    });
+    socketRef.current = s;
+
+    s.on('connect', () => {
+      console.log('[SOCKET] connected:', s.id, '→', s.io?.uri);
+    });
+    s.on('connect_error', (e) => {
+      console.error('[SOCKET] connect_error:', e?.message || e);
     });
 
-    // 새 방 생성 실시간 반영
-    socketRef.current.on('room-created', (newRoom) => {
-      setRooms((prev) =>
-        prev.some((r) => r.id === newRoom.id) ? prev : [...prev, newRoom]
-      );
+    // 다른 클라이언트가 만든 방을 실시간 반영
+    s.on('room-created', (newRoom) => {
+      console.log('📡 room-created', newRoom);
+      setRooms((prev) => (prev.some((r) => r.id === newRoom.id) ? prev : [...prev, newRoom]));
     });
 
-    // 방 이름 변경, 삭제 같은 이벤트도 대비(서버가 보내면)
-    socketRef.current.on('room-updated', (room) => {
+    // 확장용 이벤트들
+    s.on('room-updated', (room) => {
       setRooms((prev) => prev.map((r) => (r.id === room.id ? room : r)));
     });
-    socketRef.current.on('room-deleted', (roomId) => {
+    s.on('room-deleted', (roomId) => {
       setRooms((prev) => prev.filter((r) => r.id !== roomId));
     });
 
     return () => {
-      socketRef.current?.disconnect();
+      s.off('connect');
+      s.off('connect_error');
+      s.off('room-created');
+      s.off('room-updated');
+      s.off('room-deleted');
+      s.disconnect();
     };
   }, [token]);
 
-  // 3) 방 생성
+  // 방 생성
   const createRoom = useCallback(
     async (e) => {
       e.preventDefault();
-      if (!newRoomName.trim()) return;
+      const name = newRoomName.trim();
+      if (!name) return;
+
       try {
-        const { data } = await api.post('/api/rooms', { name: newRoomName });
-        setRooms((prev) =>
-          prev.some((r) => r.id === data.id) ? prev : [...prev, data]
-        );
+        const { data } = await api.post('/api/rooms', { name });
+        // 내 화면 즉시 반영 (소켓 브로드캐스트는 다른 클라용)
+        setRooms((prev) => (prev.some((r) => r.id === data.id) ? prev : [...prev, data]));
         setNewRoomName('');
         setShowCreateRoom(false);
       } catch (err) {
-        console.error('Failed to create room:', err?.response?.data || err);
+        console.error('Failed to create room:', err?.response?.data || err?.message || err);
       }
     },
     [api, newRoomName]
@@ -104,7 +134,6 @@ const Home = ({ user, onLogout }) => {
       {/* Sidebar */}
       <aside className="w-64 bg-neutral-900 flex flex-col border-r border-neutral-800">
         <div className="p-4 border-b border-neutral-800">
-          {/* ✅ 로고 + 타이틀 (Discord Clone → DevSync 로고) */}
           <div className="flex items-center gap-3">
             <img
               src={logo}
@@ -180,18 +209,14 @@ const Home = ({ user, onLogout }) => {
       {/* Main Content */}
       <main className="flex-1 flex items-center justify-center">
         <div className="text-center">
-          {/* ✅ 메인 히어로에 로고 재사용 */}
           <img
             src={logo}
             alt="DevSync Logo"
             className="w-40 h-auto mx-auto mb-4 drop-shadow-[0_0_8px_#F9E4BC]"
           />
-  
-
           <p className="text-gray-400 mb-6">
             Select a room from the sidebar to start chatting
           </p>
-
           <div className="text-gray-500">
             <p>Features:</p>
             <ul className="mt-2 space-y-1">

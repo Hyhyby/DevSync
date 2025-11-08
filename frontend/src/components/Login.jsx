@@ -4,7 +4,9 @@ import axios from 'axios';
 import logo from '../../assets/devsync-logo.png';
 
 // ✅ 환경변수로 서버 주소 주입 (없으면 동일 원본)
-const API_BASE = import.meta?.env?.VITE_API_BASE || '';
+// 모두 같은 ngrok 서버를 사용하도록 고정
+const API_BASE = "https://commensurately-preflagellate-merissa.ngrok-free.dev";
+
 
 const Login = ({ onLogin }) => {
   const [isLogin, setIsLogin] = useState(true);
