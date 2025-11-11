@@ -172,7 +172,12 @@ app.post('/api/rooms', authenticateToken, (req, res) => {
   io.emit('room-created', room);
   res.json(room);
 });
-
+// 🔽 방 단건 조회 (이름 가져오기)
+app.get('/api/rooms/:id', authenticateToken, (req, res) => {
+  const room = rooms.find(r => r.id === req.params.id);
+  if (!room) return res.status(404).json({ error: 'Room not found' });
+  res.json(room); // { id, name, createdBy }
+});
 /* -------------------- Socket.IO -------------------- */
 io.use((socket, next) => {
   try {
@@ -201,8 +206,10 @@ io.on('connection', (socket) => {
   socket.on('join-room', (payload) => {
     const roomId = typeof payload === 'string' ? payload : payload?.roomId;
     const username = payload?.username || user.username;
-    if (!roomId) return;
 
+    if (!roomId) return;
+     const room = rooms.find(r => r.id === roomId);
+  socket.emit('room-info', room || { id: roomId, name: roomId });
     socket.join(roomId);
     log.connection('JOINED_ROOM', socket.id, `Room: ${roomId} / User: ${username}`);
 

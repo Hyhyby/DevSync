@@ -1,5 +1,5 @@
 // electron/main.js
-const { app, BrowserWindow, shell, ipcMain } = require('electron');
+const { app, BrowserWindow,shell, ipcMain } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
@@ -159,7 +159,16 @@ function createWindow(devUrl) {
   } else {
     mainWindow.loadFile(path.join(__dirname, '../frontend/dist/index.html'));
   }
-
+  mainWindow.webContents.once('did-finish-load', () => {
+    mainWindow.webContents.insertCSS(`
+      .messages{overflow-y:auto; scrollbar-gutter:stable;}
+      .messages::-webkit-scrollbar{width:10px; height:10px;}
+      .messages::-webkit-scrollbar-track{background:#2f3136; margin:4px; border-radius:10px;}
+      .messages::-webkit-scrollbar-thumb{background:#5865f2; border-radius:10px; border:2px solid #2f3136;}
+      .messages::-webkit-scrollbar-thumb:hover{background:#4752c4;}
+      .messages::-webkit-scrollbar-corner{background:#2f3136; border-radius:10px;}
+    `);
+  });
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url);
     return { action: 'deny' };
@@ -167,7 +176,7 @@ function createWindow(devUrl) {
 
   mainWindow.on('closed', () => { mainWindow = null; });
 }
-
+app.commandLine.appendSwitch('disable-features', 'OverlayScrollbar');
 /* =========================
    4) 앱 라이프사이클
    ========================= */
