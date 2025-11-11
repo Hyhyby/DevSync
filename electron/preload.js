@@ -1,13 +1,16 @@
+// electron/preload.js
 const { contextBridge, ipcRenderer } = require('electron');
 
-// 렌더러 프로세스에서 안전하게 사용할 수 있는 API 노출
+// 창/환경
 contextBridge.exposeInMainWorld('electron', {
-  // 윈도우 관련 기능
-  resizeWindow: (width, height) => {
-    ipcRenderer.invoke('window-resize', width, height);
-  },
-
-  // 환경 정보
+  resizeWindow: (width, height) => ipcRenderer.invoke('window-resize', width, height),
   getPlatform: () => process.platform,
   getVersions: () => process.versions,
+  toggleDevTools: () => ipcRenderer.invoke('toggle-dev-tools')
+});
+
+// 설정 (API_BASE 등)
+contextBridge.exposeInMainWorld('appConfig', {
+  get: () => ipcRenderer.invoke('config:get'),
+  set: (partial) => ipcRenderer.invoke('config:set', partial)
 });

@@ -27,8 +27,10 @@ const NGROK_ORIGIN = 'https://commensurately-preflagellate-merissa.ngrok-free.de
 const ALLOWED_ORIGINS = [
   'http://localhost:3000',
   'http://localhost:5173',
+  'http://localhost:5174', 
   `http://${ipv4}:3000`,
   `http://${ipv4}:5173`,
+  `http://${ipv4}:5174`,
   NGROK_ORIGIN
 ];
 

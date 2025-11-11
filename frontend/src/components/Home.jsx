@@ -4,9 +4,9 @@ import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { io } from 'socket.io-client';
 import logo from '../../assets/devsync-logo.png';
+import { API_BASE } from '../config';
 
 // 모두 같은 ngrok 백엔드로 통일
-const API_BASE = "https://commensurately-preflagellate-merissa.ngrok-free.dev";
 
 const Home = ({ user, onLogout }) => {
   // 로컬 캐시 복구로 깜빡임 최소화

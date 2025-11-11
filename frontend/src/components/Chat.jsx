@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { io } from 'socket.io-client';
+import { API_BASE } from '../config';
 
 // ngrok 백엔드 주소 (환경변수 쓰면 더 좋아요: import.meta.env.VITE_SOCKET_URL)
-export const API_BASE = "https://commensurately-preflagellate-merissa.ngrok-free.dev";
+
 
 const Chat = ({ user }) => {
   const { roomId } = useParams();
