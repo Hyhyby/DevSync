@@ -1,4 +1,4 @@
-`// server.js
+// server.js
 const express = require('express');
 const http = require('http');
 const socketIo = require('socket.io');
@@ -22,6 +22,44 @@ const PORT = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
 
 const NGROK_ORIGIN = 'https://commensurately-preflagellate-merissa.ngrok-free.dev';
+
+/* -------------------- App & Socket 설정 -------------------- */
+const app = express();
+const server = http.createServer(app);
+const io = socketIo(server, {
+  cors: {
+    origin(origin, cb) {
+      if (isAllowedOrigin(origin)) return cb(null, true);
+      cb(new Error(`Not allowed by Socket.IO CORS: ${origin}`));
+    },
+    methods: ['GET', 'POST'],
+    allowedHeaders: ['authorization', 'content-type'],
+    credentials: true,
+  },
+});
+
+app.set('trust proxy', true); 
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions)); 
+app.use(express.json());
+app.use(requestLogger);
+
+/* -------------------- 라우터 -------------------- */
+const authRoutes = require('./routes/authRoutes');
+const userRoutes = require('./routes/userRoutes');
+const friendRoutes = require('./routes/friendRoutes');
+const serverRoutes = require('./routes/serverRoutes');
+const channelRoutes = require('./routes/channelRoutes');
+const messageRoutes = require('./routes/messageRoutes');
+const dmRoutes = require('./routes/dmRoutes');
+
+app.use('/api/auth', authRoutes);
+app.use('/api/users', userRoutes);
+app.use('/api/friends', friendRoutes);
+app.use('/api/servers', serverRoutes);
+app.use('/api:serverId/channels', channelRoutes);
+app.use('/api:serverId/messages', messageRoutes);
+app.use('/api:serverId/dm', dmRoutes);
 
 /* -------------------- CORS 허용 -------------------- */
 const ALLOWED_ORIGINS = [
@@ -56,27 +94,6 @@ const corsOptions = {
   allowedHeaders: ['Content-Type', 'Authorization'],
   methods: ['GET', 'POST', 'OPTIONS'],
 };
-
-/* -------------------- App & Socket 설정 -------------------- */
-const app = express();
-const server = http.createServer(app);
-const io = socketIo(server, {
-  cors: {
-    origin(origin, cb) {
-      if (isAllowedOrigin(origin)) return cb(null, true);
-      cb(new Error(`Not allowed by Socket.IO CORS: ${origin}`));
-    },
-    methods: ['GET', 'POST'],
-    allowedHeaders: ['authorization', 'content-type'],
-    credentials: true,
-  },
-});
-
-app.set('trust proxy', true); 
-app.use(cors(corsOptions));
-app.options('*', cors(corsOptions)); 
-app.use(express.json());
-app.use(requestLogger);
 
 /* -------------------- users & rooms.json -------------------- */
 const users = [];
