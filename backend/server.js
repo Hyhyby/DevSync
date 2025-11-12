@@ -23,9 +23,44 @@ const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
 
 const NGROK_ORIGIN = 'https://commensurately-preflagellate-merissa.ngrok-free.dev';
 
+/* -------------------- CORS 허용(먼저 정의!) -------------------- */
+const ALLOWED_ORIGINS = [
+  'http://localhost:3000',
+  'http://localhost:5173',
+  'http://localhost:5174',
+  `http://${ipv4}:3000`,
+  `http://${ipv4}:5173`,
+  `http://${ipv4}:5174`,
+  NGROK_ORIGIN,
+];
+
+const NGROK_REGEXES = [
+  /^https:\/\/[a-z0-9-]+\.ngrok\.app$/i,
+  /^https:\/\/[a-z0-9-]+\.ngrok-free\.app$/i,
+  /^https:\/\/[a-z0-9-]+\.ngrok-free\.dev$/i,
+];
+
+const isAllowedOrigin = (origin) => {
+  if (!origin) return true; // 모바일 앱/Electron 등 Origin 없음 허용
+  if (ALLOWED_ORIGINS.includes(origin)) return true;
+  return NGROK_REGEXES.some(r => r.test(origin));
+};
+
+const corsOptions = {
+  origin(origin, cb) {
+    if (isAllowedOrigin(origin)) return cb(null, true);
+    cb(new Error(`Not allowed by CORS: ${origin}`));
+  },
+  credentials: true,
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  methods: ['GET', 'POST', 'OPTIONS'],
+};
+
 /* -------------------- App & Socket 설정 -------------------- */
 const app = express();
 const server = http.createServer(app);
+
+// ⚠️ isAllowedOrigin, ALLOWED_ORIGINS 정의 이후에 생성해야 함
 const io = socketIo(server, {
   cors: {
     origin(origin, cb) {
@@ -38,9 +73,9 @@ const io = socketIo(server, {
   },
 });
 
-app.set('trust proxy', true); 
+app.set('trust proxy', true);
 app.use(cors(corsOptions));
-app.options('*', cors(corsOptions)); 
+app.options('*', cors(corsOptions));
 app.use(express.json());
 app.use(requestLogger);
 
@@ -57,50 +92,16 @@ app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/friends', friendRoutes);
 app.use('/api/servers', serverRoutes);
-app.use('/api:serverId/channels', channelRoutes);
-app.use('/api:serverId/messages', messageRoutes);
-app.use('/api:serverId/dm', dmRoutes);
-
-/* -------------------- CORS 허용 -------------------- */
-const ALLOWED_ORIGINS = [
-  'http://localhost:3000',
-  'http://localhost:5173',
-  'http://localhost:5174', 
-  `http://${ipv4}:3000`,
-  `http://${ipv4}:5173`,
-  `http://${ipv4}:5174`,
-  NGROK_ORIGIN
-];
-
-const NGROK_REGEXES = [
-  /^https:\/\/[a-z0-9-]+\.ngrok\.app$/i,
-  /^https:\/\/[a-z0-9-]+\.ngrok-free\.app$/i,
-  /^https:\/\/[a-z0-9-]+\.ngrok-free\.app$/i,
-  /^https:\/\/[a-z0-9-]+\.ngrok-free\.dev$/i,
-];
-
-const isAllowedOrigin = (origin) => {
-  if (!origin) return true;
-  if (ALLOWED_ORIGINS.includes(origin)) return true;
-  return NGROK_REGEXES.some(r => r.test(origin));
-};
-
-const corsOptions = {
-  origin(origin, cb) {
-    if (isAllowedOrigin(origin)) return cb(null, true);
-    cb(new Error(`Not allowed by CORS: ${origin}`));
-  },
-  credentials: true,
-  allowedHeaders: ['Content-Type', 'Authorization'],
-  methods: ['GET', 'POST', 'OPTIONS'],
-};
+// ✅ 파라미터 경로 수정
+app.use('/api/:serverId/channels', channelRoutes);
+app.use('/api/:serverId/messages', messageRoutes);
+app.use('/api/:serverId/dm', dmRoutes);
 
 /* -------------------- users & rooms.json -------------------- */
 const users = [];
 
 const ROOMS_FILE = path.join(__dirname, 'rooms.json');
 
-// 파일에서 rooms 불러오기
 function loadRooms() {
   try {
     const data = fs.readFileSync(ROOMS_FILE, 'utf8');
@@ -109,12 +110,9 @@ function loadRooms() {
     return [];
   }
 }
-
-// 파일에 rooms 저장
 function saveRooms(rooms) {
   fs.writeFileSync(ROOMS_FILE, JSON.stringify(rooms, null, 2));
 }
-
 let rooms = loadRooms(); // ✅ 서버 시작 시 rooms.json 불러오기
 
 /* -------------------- JWT 인증 -------------------- */
@@ -129,7 +127,6 @@ const authenticateToken = (req, res, next) => {
 };
 
 /* -------------------- REST API -------------------- */
-
 // 헬스체크
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, time: new Date().toISOString() });
@@ -189,12 +186,14 @@ app.post('/api/rooms', authenticateToken, (req, res) => {
   io.emit('room-created', room);
   res.json(room);
 });
-// 🔽 방 단건 조회 (이름 가져오기)
+
+// 방 단건 조회
 app.get('/api/rooms/:id', authenticateToken, (req, res) => {
   const room = rooms.find(r => r.id === req.params.id);
   if (!room) return res.status(404).json({ error: 'Room not found' });
-  res.json(room); // { id, name, createdBy }
+  res.json(room);
 });
+
 /* -------------------- Socket.IO -------------------- */
 io.use((socket, next) => {
   try {
@@ -225,8 +224,8 @@ io.on('connection', (socket) => {
     const username = payload?.username || user.username;
 
     if (!roomId) return;
-     const room = rooms.find(r => r.id === roomId);
-  socket.emit('room-info', room || { id: roomId, name: roomId });
+    const room = rooms.find(r => r.id === roomId);
+    socket.emit('room-info', room || { id: roomId, name: roomId });
     socket.join(roomId);
     log.connection('JOINED_ROOM', socket.id, `Room: ${roomId} / User: ${username}`);
 
