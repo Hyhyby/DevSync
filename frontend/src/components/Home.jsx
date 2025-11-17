@@ -2,130 +2,70 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
-import { io } from 'socket.io-client';
 import logo from '../../assets/devsync-logo.png';
 import { API_BASE } from '../config';
 
-// 모두 같은 ngrok 백엔드로 통일
-
 const Home = ({ user, onLogout }) => {
-  // 로컬 캐시 복구로 깜빡임 최소화
-  const [rooms, setRooms] = useState(() => {
-    try { return JSON.parse(localStorage.getItem('rooms') || '[]'); }
-    catch { return []; }
-  });
+  const [rooms, setRooms] = useState(() => JSON.parse(localStorage.getItem('rooms') || '[]'));
   const [newRoomName, setNewRoomName] = useState('');
   const [showCreateRoom, setShowCreateRoom] = useState(false);
-  const [loadingRooms, setLoadingRooms] = useState(true);
-  const navigate = useNavigate();
-  const socketRef = useRef(null);
 
-  // 매 렌더마다 최신 토큰을 사용 (useMemo([])로 고정하지 않음)
+  const [friends, setFriends] = useState([]);
+  const [friendQuery, setFriendQuery] = useState('');
+  const [showFriendSearch, setShowFriendSearch] = useState(false);
+
+  const [notifications, setNotifications] = useState([]); // 알림 목록
+  const [showNotifPanel, setShowNotifPanel] = useState(false); // 알림 모아보기
+
+  const navigate = useNavigate();
   const token = sessionStorage.getItem('token') || localStorage.getItem('token');
 
-  // CORS 환경에서 인증 안정화를 위해 withCredentials 추가
-  const api = useMemo(
-    () =>
-      axios.create({
-        baseURL: API_BASE,
-        headers: { Authorization: `Bearer ${token}` },
-        withCredentials: true,
-        timeout: 15000,
-      }),
-    [token]
-  );
+  const api = useMemo(() => axios.create({
+    baseURL: API_BASE,
+    headers: { Authorization: `Bearer ${token}` },
+    withCredentials: true,
+    timeout: 15000,
+  }), [token]);
 
-  // /api/rooms 공통 로더
-  const fetchRooms = useCallback(async () => {
+  // 알림 추가 (카카오톡처럼)
+  const addNotification = useCallback((message) => {
+    const id = Date.now();
+    setNotifications(prev => [{ id, message }, ...prev]);
+  }, []);
+
+  const searchUser = useCallback(async (username) => {
+    if (!username) return [];
     try {
-      const res = await api.get('/api/rooms');
-      console.log('[API] /api/rooms status:', res.status, res.data);
-      setRooms(Array.isArray(res.data) ? res.data : []);
+      const res = await api.get(`/api/users/search?username=${username}`);
+      return res.data; // { id, username } 배열
     } catch (err) {
-      console.error('[API] /api/rooms 실패:', err?.response?.status, err?.response?.data || err?.message);
-    } finally {
-      setLoadingRooms(false);
+      console.error(err);
+      return [];
     }
   }, [api]);
 
-  // 최초 로드
-  useEffect(() => {
-    fetchRooms();
-  }, [fetchRooms]);
+  const handleAddFriend = useCallback(async () => {
+    const targetUsername = friendQuery.trim();
+    if (!targetUsername) return;
 
-  // 창 포커스 돌아올 때 최신 목록 싱크
-  useEffect(() => {
-    const onFocus = () => fetchRooms();
-    window.addEventListener('focus', onFocus);
-    return () => window.removeEventListener('focus', onFocus);
-  }, [fetchRooms]);
+    try {
+      // 서버 API 호출 (friendbla.js /requests POST)
+      const res = await api.post('/api/friends/requests', { targetUsername });
 
-  // rooms 로컬 캐시 동기화
-  useEffect(() => {
-    localStorage.setItem('rooms', JSON.stringify(rooms));
-  }, [rooms]);
+      // 성공 시 알림
+      addNotification(`✅ 친구 요청을 보냈습니다: ${targetUsername}`);
 
-  // 소켓 연결 & 실시간 업데이트
-  useEffect(() => {
-    if (!token) return;
-
-    const s = io(API_BASE, {
-      transports: ['websocket'],
-      auth: { token },
-      // withCredentials는 socket.io에선 헤더·쿠키 자동 처리, 필요 시 path 동일하게 맞춰 사용
-    });
-    socketRef.current = s;
-
-    s.on('connect', () => {
-      console.log('[SOCKET] connected:', s.id, '→', s.io?.uri);
-    });
-    s.on('connect_error', (e) => {
-      console.error('[SOCKET] connect_error:', e?.message || e);
-    });
-
-    // 다른 클라이언트가 만든 방을 실시간 반영
-    s.on('room-created', (newRoom) => {
-      console.log('📡 room-created', newRoom);
-      setRooms((prev) => (prev.some((r) => r.id === newRoom.id) ? prev : [...prev, newRoom]));
-    });
-
-    // 확장용 이벤트들
-    s.on('room-updated', (room) => {
-      setRooms((prev) => prev.map((r) => (r.id === room.id ? room : r)));
-    });
-    s.on('room-deleted', (roomId) => {
-      setRooms((prev) => prev.filter((r) => r.id !== roomId));
-    });
-
-    return () => {
-      s.off('connect');
-      s.off('connect_error');
-      s.off('room-created');
-      s.off('room-updated');
-      s.off('room-deleted');
-      s.disconnect();
-    };
-  }, [token]);
-
-  // 방 생성
-  const createRoom = useCallback(
-    async (e) => {
-      e.preventDefault();
-      const name = newRoomName.trim();
-      if (!name) return;
-
-      try {
-        const { data } = await api.post('/api/rooms', { name });
-        // 내 화면 즉시 반영 (소켓 브로드캐스트는 다른 클라용)
-        setRooms((prev) => (prev.some((r) => r.id === data.id) ? prev : [...prev, data]));
-        setNewRoomName('');
-        setShowCreateRoom(false);
-      } catch (err) {
-        console.error('Failed to create room:', err?.response?.data || err?.message || err);
-      }
-    },
-    [api, newRoomName]
-  );
+      // 친구 목록 갱신 (원하면 바로 fetch 해서 갱신 가능)
+      setFriends(prev => [...prev, { id: res.data.to, username: targetUsername }]);
+    } catch (err) {
+      // 에러 메시지 서버에서 보내준 메시지 활용
+      const msg = err.response?.data?.error || '친구 요청 실패';
+      addNotification(`❌ ${msg}`);
+    } finally {
+      setFriendQuery('');
+      setShowFriendSearch(false);
+    }
+  }, [friendQuery, api, addNotification]);
 
   const joinRoom = (roomId) => navigate(`/chat/${roomId}`);
 
@@ -133,66 +73,104 @@ const Home = ({ user, onLogout }) => {
     <div className="min-h-screen bg-black flex">
       {/* Sidebar */}
       <aside className="w-64 bg-neutral-900 flex flex-col border-r border-neutral-800">
-        <div className="p-4 border-b border-neutral-800">
+        <div className="p-4 border-b border-neutral-800 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <img
-              src={logo}
-              alt="DevSync Logo"
-              className="w-10 h-10 object-contain drop-shadow-[0_0_6px_#F9E4BC]"
-            />
-            <div>
-              <p className="text-gray-400 text-xs">
-                Welcome, {user?.username}
-              </p>
-            </div>
+            <img src={logo} alt="DevSync Logo" className="w-10 h-10 object-contain" />
+            <p className="text-gray-400 text-xs">Welcome, {user?.username}</p>
+          </div>
+          <div className="relative">
+            {/* 친구 추가 버튼 */}
+            <button
+              onClick={() => setShowFriendSearch(v => !v)}
+              className="text-green-400 hover:text-green-300 text-xl"
+              title="Add Friend"
+            >+</button>
+            {/* 알림 아이콘 */}
+            <button
+              onClick={() => setShowNotifPanel(v => !v)}
+              className="ml-3 relative text-yellow-400 hover:text-yellow-300 text-xl"
+              title="Notifications"
+            >
+              🔔
+              {notifications.length > 0 && (
+                <span className="absolute -top-1 -right-1 inline-flex items-center justify-center w-4 h-4 text-[10px] font-bold text-white bg-red-500 rounded-full">
+                  {notifications.length}
+                </span>
+              )}
+            </button>
           </div>
         </div>
 
+        {/* 친구 검색창 */}
+        {showFriendSearch && (
+          <div className="p-2 border-b border-neutral-800">
+            <input
+              type="text"
+              value={friendQuery}
+              onChange={e => setFriendQuery(e.target.value)}
+              placeholder="Search username..."
+              className="w-full p-1 bg-neutral-800 border border-neutral-700 rounded text-white placeholder-gray-400 focus:outline-none focus:border-green-400"
+            />
+            <button
+              onClick={handleAddFriend}
+              className="mt-1 w-full bg-green-600 hover:bg-green-500 rounded p-1 text-white"
+            >Add Friend</button>
+          </div>
+        )}
+
+        {/* 알림 패널 */}
+        {showNotifPanel && (
+          <div className="absolute top-12 right-4 w-60 max-h-80 overflow-y-auto bg-neutral-800 border border-neutral-700 rounded shadow-lg z-50 p-2">
+            <h3 className="text-white font-semibold text-sm mb-2">Notifications</h3>
+            {notifications.length === 0 ? (
+              <p className="text-gray-400 text-xs">알림이 없습니다.</p>
+            ) : (
+              notifications.map(n => (
+                <div key={n.id} className="bg-neutral-700 text-white text-xs p-1 rounded mb-1">
+                  {n.message}
+                </div>
+              ))
+            )}
+            <button
+              onClick={() => setNotifications([])}
+              className="mt-2 w-full text-xs bg-red-600 hover:bg-red-500 rounded p-1 text-white"
+            >Clear All</button>
+          </div>
+        )}
+
+        {/* 방 목록 */}
         <div className="flex-1 p-4 space-y-3">
           <div className="flex justify-between items-center">
             <h2 className="text-white font-semibold">Rooms</h2>
             <button
-              onClick={() => setShowCreateRoom((v) => !v)}
+              onClick={() => setShowCreateRoom(v => !v)}
               className="text-yellow-400 hover:text-yellow-300 text-xl"
-              aria-label="Create room"
-              title="Create room"
-            >
-              +
-            </button>
+            >+</button>
           </div>
 
           {showCreateRoom && (
-            <form onSubmit={createRoom} className="mb-2">
+            <form onSubmit={e => { e.preventDefault(); setRooms([...rooms, { id: Date.now(), name: newRoomName }]); setNewRoomName(''); setShowCreateRoom(false); }}>
               <input
                 type="text"
                 value={newRoomName}
-                onChange={(e) => setNewRoomName(e.target.value)}
+                onChange={e => setNewRoomName(e.target.value)}
                 placeholder="Room name"
-                className="w-full p-2 bg-neutral-800 border border-neutral-700 rounded text-white placeholder-gray-400 focus:outline-none focus:border-yellow-400"
+                className="w-full p-1 bg-neutral-800 border border-neutral-700 rounded text-white placeholder-gray-400 focus:outline-none focus:border-yellow-400"
                 autoFocus
               />
             </form>
           )}
 
-          {/* 방 목록 */}
-          <div className="space-y-1">
-            {loadingRooms ? (
-              <div className="text-gray-500 text-sm">Loading rooms…</div>
-            ) : rooms.length === 0 ? (
-              <div className="text-gray-500 text-sm">
-                No rooms yet. Click <span className="text-yellow-400">+</span> to create one.
-              </div>
-            ) : (
-              rooms.map((room) => (
-                <button
-                  key={room.id}
-                  onClick={() => joinRoom(room.id)}
-                  className="w-full text-left p-2 rounded hover:bg-neutral-800 text-gray-300 hover:text-white transition-colors"
-                >
-                  # {room.name}
-                </button>
-              ))
-            )}
+          <div className="space-y-1 mt-2">
+            {rooms.map(r => (
+              <button
+                key={r.id}
+                onClick={() => joinRoom(r.id)}
+                className="w-full text-left p-2 rounded hover:bg-neutral-800 text-gray-300 hover:text-white transition-colors"
+              >
+                # {r.name}
+              </button>
+            ))}
           </div>
         </div>
 
@@ -208,24 +186,9 @@ const Home = ({ user, onLogout }) => {
 
       {/* Main Content */}
       <main className="flex-1 flex items-center justify-center">
-        <div className="text-center">
-          <img
-            src={logo}
-            alt="DevSync Logo"
-            className="w-40 h-auto mx-auto mb-4 drop-shadow-[0_0_8px_#F9E4BC]"
-          />
-          <p className="text-gray-400 mb-6">
-            Select a room from the sidebar to start chatting
-          </p>
-          <div className="text-gray-500">
-            <p>Features:</p>
-            <ul className="mt-2 space-y-1">
-              <li>• Real-time messaging</li>
-              <li>• WebRTC voice/video chat</li>
-              <li>• JWT authentication</li>
-              <li>• Socket.io integration</li>
-            </ul>
-          </div>
+        <div className="text-center text-gray-400">
+          <img src={logo} alt="DevSync Logo" className="w-40 h-auto mx-auto mb-4" />
+          <p>Select a room from the sidebar to start chatting</p>
         </div>
       </main>
     </div>

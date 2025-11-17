@@ -6,10 +6,11 @@ const ipv4 =
 
 const PORT = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
-const NGROK_ORIGIN = 'https://commensurately-preflagellate-merissa.ngrok-free.dev';
+const NGROK_ORIGIN = 'https://winford-subaverage-foreseeingly.ngrok-free.dev';
 
 const ALLOWED_ORIGINS = [
   'http://localhost:3000',
+  'http://localhost:5000',
   'http://localhost:5173',
   `http://${ipv4}:3000`,
   `http://${ipv4}:5173`,
