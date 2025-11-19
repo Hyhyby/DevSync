@@ -1,217 +1,235 @@
+// routes/friendRoutes.js
 const express = require('express');
-const pool = require('../config/db');
 const { authenticateToken } = require('../middleware/auth');
-const { v4: uuidv4 } = require('uuid');
+const pool = require('../config/db');
+const { log } = require('../middleware/logger');
 
 const router = express.Router();
 
-/* ------------------------------
-   1. 친구 목록 조회
------------------------------- */
+/**
+ * 친구 목록 가져오기
+ * friends 테이블에서 status = 'accepted' 인 것만 반환
+ * → [{ id, username }] 형태로 프론트에 전달
+ */
 router.get('/', authenticateToken, async (req, res) => {
-  try {
-    const myId = req.user.userId;
+  const myId = req.user.userId;
 
-    const { rows } = await pool.query(
-      `SELECT u.id, u.username
-       FROM friendships f
-       JOIN users u 
-         ON u.id = CASE 
-                     WHEN f.user1 = $1 THEN f.user2 
-                     ELSE f.user1 
-                   END
-       WHERE f.user1 = $1 OR f.user2 = $1`,
+  try {
+    const result = await pool.query(
+      `
+      SELECT 
+        u.id,
+        u.username
+      FROM friends f
+      JOIN users u
+        ON u.id = CASE 
+                    WHEN f.user_index = $1 THEN f.friend_index
+                    ELSE f.user_index
+                  END
+      WHERE 
+        (f.user_index = $1 OR f.friend_index = $1)
+        AND f.status = 'accepted'
+      `,
       [myId]
     );
 
-    res.json(rows);
+    // 프론트는 friends.map(friend => friend.id, friend.username) 사용 중
+    res.json(result.rows);
   } catch (err) {
-    console.error('친구 목록 조회 실패', err);
-    res.status(500).json({ error: '친구 목록 조회 실패' });
+    log.error('GET_FRIENDS_ERROR', err);
+    res.status(500).json({ error: 'Server error' });
   }
 });
 
-/* ------------------------------
-   2. 친구 요청 전송 (username 기반)
------------------------------- */
-// POST /friends/add
-router.post('/add', async (req, res) => {
-  const { requesterId } = req.body;  // 로그인된 유저 id
-  const { friendName } = req.body;   // 추가하려는 친구의 username
+/**
+ * 친구 요청 보내기
+ * 프론트: POST /api/friends/request
+ * body: { identifier }  // username
+ * (추가로 { targetUserId }도 지원 가능)
+ */
+router.post('/request', authenticateToken, async (req, res) => {
+  const myId = req.user.userId;
+  const { identifier, targetUserId } = req.body;
+
+  // identifier도 없고 targetUserId도 없으면 에러
+  if (!identifier && !targetUserId) {
+    return res
+      .status(400)
+      .json({ error: '아이디를 입력해 주세요. (identifier 또는 targetUserId 필요)' });
+  }
 
   try {
-    // 1. 친구 username 존재 여부 확인
-    const userCheck = await pool.query(
-      'SELECT id, username FROM users WHERE username = $1',
-      [friendName]
-    );
+    let targetUser = null;
 
-    if (userCheck.rows.length === 0) {
-      return res.status(404).json({ error: '해당 닉네임을 가진 유저가 없습니다.' });
-    }
-
-    const friendId = userCheck.rows[0].id;
-
-    // 2. 자기 자신 추가 방지
-    if (friendId === requesterId) {
-      return res.status(400).json({ error: '자기 자신은 친구로 추가할 수 없습니다.' });
-    }
-
-    // 3. 이미 친구인지 확인
-    const friendCheck = await pool.query(
-      `SELECT * FROM friends 
-       WHERE (user_id = $1 AND friend_id = $2)
-          OR (user_id = $2 AND friend_id = $1)`,
-      [requesterId, friendId]
-    );
-
-    if (friendCheck.rows.length > 0) {
-      return res.status(400).json({ error: '이미 친구입니다.' });
-    }
-
-    // 4. 친구 추가
-    const newFriend = await pool.query(
-      `INSERT INTO friends (user_id, friend_id)
-       VALUES ($1, $2)
-       RETURNING id, user_id, friend_id`,
-      [requesterId, friendId]
-    );
-
-    return res.status(200).json({
-      message: '친구 추가 완료',
-      friend: {
-        id: friendId,
-        username: userCheck.rows[0].username
+    if (targetUserId) {
+      // 숫자 ID로 직접 찾는 경우 (확장용)
+      const userCheck = await pool.query(
+        'SELECT id, username FROM users WHERE id = $1',
+        [targetUserId]
+      );
+      if (userCheck.rowCount === 0) {
+        return res.status(404).json({ error: '해당 유저를 찾을 수 없습니다.' });
       }
+      targetUser = userCheck.rows[0];
+    } else {
+      // identifier로 username 검색 (지금 Friends.jsx에서 사용하는 방식)
+      const userCheck = await pool.query(
+        'SELECT id, username FROM users WHERE username = $1',
+        [identifier]
+      );
+      if (userCheck.rowCount === 0) {
+        return res.status(404).json({ error: '존재하지 않는 아이디입니다.' });
+      }
+      targetUser = userCheck.rows[0];
+    }
+
+    if (Number(targetUser.id) === Number(myId)) {
+      return res
+        .status(400)
+        .json({ error: '자기 자신에게는 친구 요청을 보낼 수 없습니다.' });
+    }
+
+    // 이미 친구/요청 관계인지 확인
+    const existing = await pool.query(
+      `
+      SELECT *
+      FROM friends
+      WHERE 
+        (user_index = $1 AND friend_index = $2)
+        OR
+        (user_index = $2 AND friend_index = $1)
+      `,
+      [myId, targetUser.id]
+    );
+
+    if (existing.rowCount > 0) {
+      const row = existing.rows[0];
+      if (row.status === 'pending') {
+        return res.status(400).json({ error: '이미 친구 요청이 진행 중입니다.' });
+      }
+      if (row.status === 'accepted') {
+        return res.status(400).json({ error: '이미 친구입니다.' });
+      }
+    }
+
+    // 친구 요청 생성 (pending)
+    const insert = await pool.query(
+      `
+      INSERT INTO friends (user_index, friend_index, status)
+      VALUES ($1, $2, 'pending')
+      RETURNING user_index, friend_index, status, created_at
+      `,
+      [myId, targetUser.id]
+    );
+
+    res.status(201).json({
+      targetUser,        // 프론트에서 메시지에 사용
+      request: insert.rows[0],
     });
   } catch (err) {
-    console.error('친구 추가 오류:', err);
-    return res.status(500).json({ error: '서버 오류 발생' });
+    if (err.code === '23505') {
+      return res.status(400).json({ error: '이미 친구 관계(또는 요청)가 존재합니다.' });
+    }
+
+    log.error('FRIEND_REQUEST_ERROR', err);
+    res.status(500).json({ error: 'Server error' });
   }
 });
 
+/**
+ * 내가 받은 / 보낸 친구 요청 목록
+ */
+router.get('/requests', authenticateToken, async (req, res) => {
+  const myId = req.user.userId;
 
-/* ------------------------------
-   3. 받은/보낸 요청 조회
------------------------------- */
-router.get('/:userId', async (req, res) => {
-  const { userId } = req.params;
+  try {
+    const received = await pool.query(
+      `
+      SELECT f.user_index AS from_user_id, u.username AS from_username, f.created_at
+      FROM friends f
+      JOIN users u ON f.user_index = u.id
+      WHERE f.friend_index = $1 AND f.status = 'pending'
+      `,
+      [myId]
+    );
+
+    const sent = await pool.query(
+      `
+      SELECT f.friend_index AS to_user_id, u.username AS to_username, f.created_at
+      FROM friends f
+      JOIN users u ON f.friend_index = u.id
+      WHERE f.user_index = $1 AND f.status = 'pending'
+      `,
+      [myId]
+    );
+
+    res.json({
+      received: received.rows,
+      sent: sent.rows,
+    });
+  } catch (err) {
+    log.error('GET_REQUESTS_ERROR', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+/**
+ * 친구 요청 수락
+ * body: { fromUserId }
+ */
+router.post('/requests/accept', authenticateToken, async (req, res) => {
+  const myId = req.user.userId;
+  const { fromUserId } = req.body;
+
+  if (!fromUserId) {
+    return res.status(400).json({ error: 'fromUserId is required' });
+  }
 
   try {
     const result = await pool.query(
-      `SELECT u.id, u.username
-       FROM friends f
-       JOIN users u ON u.id = f.friend_id
-       WHERE f.user_id = $1`,
-      [userId]
+      `
+      UPDATE friends
+      SET status = 'accepted'
+      WHERE user_index = $1 AND friend_index = $2 AND status = 'pending'
+      RETURNING *
+      `,
+      [fromUserId, myId]
     );
 
-    return res.status(200).json(result.rows);
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: '해당 친구 요청을 찾을 수 없습니다.' });
+    }
+
+    res.json({ ok: true, friend: result.rows[0] });
   } catch (err) {
-    console.error('친구 목록 조회 오류:', err);
-    return res.status(500).json({ error: '서버 오류 발생' });
+    log.error('ACCEPT_REQUEST_ERROR', err);
+    res.status(500).json({ error: 'Server error' });
   }
 });
 
-
-/* ------------------------------
-   4. 친구 요청 수락
------------------------------- */
-router.post('/requests/:id/accept', authenticateToken, async (req, res) => {
-  try {
-    const requestId = req.params.id;
-
-    const reqData = await pool.query(
-      'SELECT * FROM friend_requests WHERE id = $1',
-      [requestId]
-    );
-
-    if (reqData.rows.length === 0)
-      return res.status(404).json({ error: '요청을 찾을 수 없습니다.' });
-
-    const { from_user, to_user } = reqData.rows[0];
-
-    // 친구 관계 생성
-    await pool.query(
-      'INSERT INTO friendships (user1, user2) VALUES ($1, $2)',
-      [from_user, to_user]
-    );
-
-    // 요청 상태 변경
-    await pool.query(
-      'UPDATE friend_requests SET status = $1 WHERE id = $2',
-      ['accepted', requestId]
-    );
-
-    res.json({ ok: true });
-  } catch (err) {
-    console.error('친구 요청 수락 실패', err);
-    res.status(500).json({ error: '친구 요청 수락 실패' });
-  }
-});
-
-/* ------------------------------
-   5. 친구 요청 거절
------------------------------- */
-router.post('/requests/:id/decline', authenticateToken, async (req, res) => {
-  try {
-    const requestId = req.params.id;
-
-    await pool.query(
-      'UPDATE friend_requests SET status = $1 WHERE id = $2',
-      ['declined', requestId]
-    );
-
-    res.json({ ok: true });
-  } catch (err) {
-    console.error('친구 요청 거절 실패', err);
-    res.status(500).json({ error: '친구 요청 거절 실패' });
-  }
-});
-
-/* ------------------------------
-   6. 친구 삭제
------------------------------- */
-router.delete('/:friendId', authenticateToken, async (req, res) => {
+/**
+ * 친구 삭제
+ */
+router.delete('/:friendUserId', authenticateToken, async (req, res) => {
   const myId = req.user.userId;
-  const friendId = req.params.friendId;
+  const friendId = req.params.friendUserId;
 
   try {
-    await pool.query(
-      `DELETE FROM friendships
-       WHERE (user1 = $1 AND user2 = $2)
-          OR (user1 = $2 AND user2 = $1)`,
+    const result = await pool.query(
+      `
+      DELETE FROM friends
+      WHERE 
+        (user_index = $1 AND friend_index = $2)
+        OR
+        (user_index = $2 AND friend_index = $1)
+      `,
       [myId, friendId]
     );
 
-    res.json({ ok: true });
+    res.json({ ok: true, deleted: result.rowCount });
   } catch (err) {
-    console.error('친구 삭제 실패', err);
-    res.status(500).json({ error: '친구 삭제 실패' });
-  }
-});
-
-/* ------------------------------
-   7. 사용자 검색 (LIKE)
------------------------------- */
-router.get('/search', authenticateToken, async (req, res) => {
-  const { username } = req.query;
-
-  if (!username)
-    return res.status(400).json({ error: 'username query required' });
-
-  try {
-    const result = await pool.query(
-      `SELECT id, username 
-       FROM users 
-       WHERE username ILIKE $1`,
-      [`%${username}%`]
-    );
-
-    res.json(result.rows);
-  } catch (err) {
-    console.error('사용자 검색 실패', err);
-    res.status(500).json({ error: '사용자 검색 실패' });
+    log.error('DELETE_FRIEND_ERROR', err);
+    res.status(500).json({ error: 'Server error' });
   }
 });
 
