@@ -167,7 +167,24 @@ const Login = ({ onLogin }) => {
           </div>
 
           {error && <div className="text-rose-400 text-[12px] text-center">{error}</div>}
+          <button
+            type="button"
+            onClick={() => {
+              const dummyUser = { id: 'dev', username: 'design-dev' };
+              const dummyAccessToken = 'dev-access-token';
+              const dummyRefreshToken = 'dev-refresh-token';
 
+              const store = remember ? localStorage : sessionStorage;
+              store.setItem('user', JSON.stringify(dummyUser));
+              store.setItem('token', dummyAccessToken);
+              store.setItem('refreshToken', dummyRefreshToken);
+
+              onLogin?.(dummyUser, dummyAccessToken);
+            }}
+            className="mt-4 w-full rounded-[4px] border border-dashed border-slate-500 px-3 py-2 text-[12px] text-slate-300 hover:bg-slate-800"
+          >
+            🔧 서버 없이 홈 화면만 보기 (디자인용 더미 로그인)
+          </button>
           <button
             type="submit"
             disabled={loading}
@@ -193,4 +210,4 @@ const Login = ({ onLogin }) => {
   );
 };
 
-export default Login;
+export default Login; ``
