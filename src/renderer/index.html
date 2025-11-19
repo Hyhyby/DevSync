@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DevSync - 개발자를 위한 메신저</title>
+    <link rel="stylesheet" href="styles/main.css">
+    <link rel="stylesheet" href="styles/auth.css">
+    <link rel="stylesheet" href="styles/chat.css">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+</head>
+<body>
+    <!-- 로딩 화면 -->
+    <div id="loading-screen" class="loading-screen">
+        <div class="loading-content">
+            <div class="logo">
+                <i class="fas fa-code"></i>
+                <h1>DevSync</h1>
+            </div>
+            <div class="loading-spinner"></div>
+            <p>연결 중...</p>
+        </div>
+    </div>
+
+    <!-- 인증 화면 -->
+    <div id="auth-screen" class="auth-screen hidden">
+        <div class="auth-container">
+            <div class="auth-header">
+                <div class="logo">
+                    <i class="fas fa-code"></i>
+                    <h1>DevSync</h1>
+                </div>
+                <p>개발자를 위한 데스크톱 메신저</p>
+            </div>
+
+            <!-- 로그인 폼 -->
+            <div id="login-form" class="auth-form">
+                <h2>로그인</h2>
+                <form id="loginForm">
+                    <div class="form-group">
+                        <label for="login-username">사용자명</label>
+                        <input type="text" id="login-username" name="username" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="login-password">비밀번호</label>
+                        <input type="password" id="login-password" name="password" required>
+                    </div>
+                    <button type="submit" class="btn btn-primary">로그인</button>
+                </form>
+                <p class="auth-switch">
+                    계정이 없으신가요? 
+                    <a href="#" id="show-register">회원가입</a>
+                </p>
+            </div>
+
+            <!-- 회원가입 폼 -->
+            <div id="register-form" class="auth-form hidden">
+                <h2>회원가입</h2>
+                <form id="registerForm">
+                    <div class="form-group">
+                        <label for="register-username">사용자명</label>
+                        <input type="text" id="register-username" name="username" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="register-email">이메일</label>
+                        <input type="email" id="register-email" name="email" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="register-nickname">닉네임</label>
+                        <input type="text" id="register-nickname" name="nickname" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="register-password">비밀번호</label>
+                        <input type="password" id="register-password" name="password" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="register-password-confirm">비밀번호 확인</label>
+                        <input type="password" id="register-password-confirm" name="passwordConfirm" required>
+                    </div>
+                    <button type="submit" class="btn btn-primary">회원가입</button>
+                </form>
+                <p class="auth-switch">
+                    이미 계정이 있으신가요? 
+                    <a href="#" id="show-login">로그인</a>
+                </p>
+            </div>
+        </div>
+    </div>
+
+    <!-- 메인 채팅 화면 -->
+    <div id="main-screen" class="main-screen hidden">
+        <!-- 사이드바 -->
+        <div class="sidebar">
+            <div class="sidebar-header">
+                <div class="user-info">
+                    <div class="user-avatar">
+                        <i class="fas fa-user"></i>
+                    </div>
+                    <div class="user-details">
+                        <h3 id="user-nickname">사용자</h3>
+                        <span id="user-status" class="status online">온라인</span>
+                    </div>
+                </div>
+                <div class="sidebar-actions">
+                    <button id="create-room-btn" class="btn-icon" title="새 채팅방">
+                        <i class="fas fa-plus"></i>
+                    </button>
+                    <button id="settings-btn" class="btn-icon" title="설정">
+                        <i class="fas fa-cog"></i>
+                    </button>
+                </div>
+            </div>
+
+            <div class="sidebar-content">
+                <!-- 채팅방 목록 -->
+                <div class="chat-rooms">
+                    <h4>채팅방</h4>
+                    <div id="chat-rooms-list" class="rooms-list">
+                        <!-- 채팅방 목록이 여기에 동적으로 추가됩니다 -->
+                    </div>
+                </div>
+
+                <!-- 온라인 사용자 -->
+                <div class="online-users">
+                    <h4>온라인 사용자</h4>
+                    <div id="online-users-list" class="users-list">
+                        <!-- 온라인 사용자 목록이 여기에 동적으로 추가됩니다 -->
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 메인 채팅 영역 -->
+        <div class="chat-main">
+            <!-- 채팅방 헤더 -->
+            <div class="chat-header">
+                <div class="chat-room-info">
+                    <h2 id="current-room-name">채팅방을 선택하세요</h2>
+                    <span id="current-room-members" class="room-members"></span>
+                </div>
+                <div class="chat-actions">
+                    <button id="room-settings-btn" class="btn-icon" title="채팅방 설정">
+                        <i class="fas fa-cog"></i>
+                    </button>
+                </div>
+            </div>
+
+            <!-- 채팅 메시지 영역 -->
+            <div class="chat-messages">
+                <div id="messages-container" class="messages-container">
+                    <div class="welcome-message">
+                        <i class="fas fa-comments"></i>
+                        <h3>DevSync에 오신 것을 환영합니다!</h3>
+                        <p>채팅방을 선택하거나 새 채팅방을 만들어보세요.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 메시지 입력 영역 -->
+            <div class="chat-input-area">
+                <div class="typing-indicator" id="typing-indicator">
+                    <!-- 타이핑 중인 사용자 표시 -->
+                </div>
+                <div class="message-input-container">
+                    <button id="attach-btn" class="btn-icon" title="파일 첨부">
+                        <i class="fas fa-paperclip"></i>
+                    </button>
+                    <div class="input-wrapper">
+                        <textarea id="message-input" placeholder="메시지를 입력하세요..." rows="1"></textarea>
+                    </div>
+                    <button id="send-btn" class="btn-icon btn-send" title="전송">
+                        <i class="fas fa-paper-plane"></i>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 모달 -->
+    <div id="modal-overlay" class="modal-overlay hidden">
+        <div class="modal">
+            <div class="modal-header">
+                <h3 id="modal-title">제목</h3>
+                <button id="modal-close" class="btn-icon">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            <div class="modal-content" id="modal-content">
+                <!-- 모달 내용이 여기에 동적으로 추가됩니다 -->
+            </div>
+        </div>
+    </div>
+
+    <!-- 알림 -->
+    <div id="notification-container" class="notification-container">
+        <!-- 알림이 여기에 동적으로 추가됩니다 -->
+    </div>
+
+    <!-- 스크립트 -->
+    <script src="scripts/api.js"></script>
+    <script src="scripts/socket.js"></script>
+    <script src="scripts/auth.js"></script>
+    <script src="scripts/chat.js"></script>
+    <script src="scripts/ui.js"></script>
+    <script src="scripts/app.js"></script>
+</body>
+</html>
