@@ -8,8 +8,15 @@ import bellIcon from '../../assets/notification.png';
 import Friends from './Home/Friends';
 import Notification from './Home/Notification';
 import Layout from './Home/Layout';
+import ServersBar from './Home/Servers';
 
 const Home = ({ user, onLogout }) => {
+   const handleSelectServer = (server) => {
+    console.log('선택된 서버:', server);
+    // 나중에:
+    // navigate(`/servers/${server.id}`)
+    // 또는 서버별 채널/채팅 화면으로 라우팅
+  };
   return (
     <div className="min-h-screen bg-black flex">
       {/* 알림 기능 전체 */}
@@ -23,8 +30,12 @@ const Home = ({ user, onLogout }) => {
         onLogout={onLogout}
       />
 
-      {/* 가운데 소개 화면 */}
-      <Layout logo={logo} />
+      {/* ⭐ 메인 영역 Wrapper 추가 ⭐ */}
+      <div className="flex-1 relative flex justify-center items-center">
+        <Layout logo={logo} />
+      {/* 화면 아래 가로 서버 바 */}
+      <ServersBar onSelectServer={handleSelectServer} />
+    </div>
     </div>
   );
 };
