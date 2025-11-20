@@ -21,7 +21,7 @@ app.use(express.json());
 app.use(requestLogger);
 
 // API routes
-app.use('/api', authRoutes);
+app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/friends', friendRoutes);
 app.use('/api/servers', serverRoutes);

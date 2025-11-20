@@ -41,32 +41,43 @@ const Friends = ({ user, logo, addFriendIcon, onLogout }) => {
 
   const api = useMemo(
     () =>
-      axios.create({
-        baseURL: API_BASE,
-        headers: { Authorization: `Bearer ${token}` },
-        withCredentials: true,
-        timeout: 15000,
-      }),
+     axios.create({
+      baseURL: API_BASE,
+      timeout: 15000,
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        'ngrok-skip-browser-warning': 'true',   // 🔥 이제 진짜 헤더로 나감
+      },
+    }),
     [token]
   );
 
-  // 🔹 친구 목록 불러오기
-  const fetchFriends = useCallback(async () => {
-    try {
-      const res = await api.get('/api/friends');
-      console.log('[Friends] /api/friends:', res.status, res.data);
-      setFriends(Array.isArray(res.data) ? res.data : []);
-    } catch (err) {
-      console.error(
-        '[Friends] /api/friends 실패:',
-        err?.response?.data || err?.message
-      );
-      setFriends((prev) => prev);
-    } finally {
-      setLoadingFriends(false);
-    }
-  }, [api]);
+// 🔹 친구 목록 불러오기 (디버깅 버전)
+const fetchFriends = useCallback(async () => {
+  console.log('[Friends] fetchFriends() 호출됨');
+  try {
+    const res = await api.get('/api/friends');
+    console.log('[Friends] /api/friends 응답:', res.status, res.data);
 
+    if (Array.isArray(res.data)) {
+      console.log('[Friends] 배열 길이:', res.data.length);
+      setFriends(res.data);
+    } else {
+      console.warn('[Friends] 예상치 못한 응답 형태:', res.data);
+      setFriends([]);
+    }
+  } catch (err) {
+    console.error(
+      '[Friends] /api/friends 실패:',
+      err?.response?.status,
+      err?.response?.data || err?.message
+    );
+    // 실패 시 기존 값 유지
+    setFriends((prev) => prev);
+  } finally {
+    setLoadingFriends(false);
+  }
+}, [api]);
   useEffect(() => {
     fetchFriends();
   }, [fetchFriends]);

@@ -18,7 +18,7 @@ const corsOptions = {
     cb(new Error(`Not allowed by CORS: ${origin}`));
   },
   credentials: true,
-  allowedHeaders: ['Content-Type', 'Authorization'],
+  allowedHeaders: ['Content-Type', 'Authorization','ngrok-skip-browser-warning'],
   methods: ['GET', 'POST', 'OPTIONS'],
 };
 

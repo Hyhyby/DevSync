@@ -13,6 +13,7 @@ const router = express.Router();
  *    body: { identifier }  // username
  */
 router.post('/request', authenticateToken, async (req, res) => {
+  console.log('📩 /request BODY:', req.body);
   const myId = req.user.userId;
   const { identifier, targetUserId } = req.body;
 

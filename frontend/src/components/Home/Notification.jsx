@@ -30,11 +30,13 @@ const Notification = ({ bellIcon, socket: externalSocket }) => {
   const api = useMemo(
     () =>
       axios.create({
-        baseURL: API_BASE,
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-        withCredentials: true,
-        timeout: 15000,
-      }),
+      baseURL: API_BASE,
+      timeout: 15000,
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        'ngrok-skip-browser-warning': 'true',   // 🔥 이제 진짜 헤더로 나감
+      },
+    }),
     [token]
   );
 

@@ -47,55 +47,53 @@ const Login = ({ onLogin }) => {
   );
 
   const handleSubmit = useCallback(
-    async (e) => {
-      e.preventDefault();
-      if (loading) return;
+  async (e) => {
+    e.preventDefault();
+    if (loading) return;
 
-      const username = formData.username.trim();
-      const password = formData.password;
+    const username = formData.username.trim();
+    const password = formData.password;
 
-      if (!username || !password) {
-        setError('아이디와 비밀번호를 입력하세요.');
-        return;
-      }
+    if (!username || !password) {
+      setError('아이디와 비밀번호를 입력하세요.');
+      return;
+    }
 
-      setLoading(true);
-      setError('');
+    setLoading(true);
+    setError('');
 
-      try {
-        const endpoints = isLogin
-          ? ['/api/auth/login', '/api/login']
-          : ['/api/auth/register', '/api/register'];
+    try {
+      // ✅ 서버 mount를 /api/auth 로 했다면:
+      const endpoint = isLogin ? '/api/auth/login' : '/api/auth/register';
 
-        const { data } = await postWithFallback(endpoints, { username, password });
+      const { data } = await api.post(endpoint, { username, password });
 
-        // ✅ accessToken과 refreshToken 저장
-        const store = remember ? localStorage : sessionStorage;
-        if (data?.user) store.setItem('user', JSON.stringify(data.user));
-        if (data?.accessToken) store.setItem('token', data.accessToken);
-        if (data?.refreshToken) store.setItem('refreshToken', data.refreshToken);
+      const store = remember ? localStorage : sessionStorage;
+      if (data?.user) store.setItem('user', JSON.stringify(data.user));
+      if (data?.accessToken) store.setItem('token', data.accessToken);
+      if (data?.refreshToken) store.setItem('refreshToken', data.refreshToken);
 
-        onLogin?.(data.user, data.accessToken);
-      } catch (err) {
-        const status = err?.response?.status;
-        const msgFromServer = err?.response?.data?.error || err?.response?.data?.message;
+      onLogin?.(data.user, data.accessToken);
+    } catch (err) {
+      const status = err?.response?.status;
+      const msgFromServer = err?.response?.data?.error || err?.response?.data?.message;
 
-        let msg =
-          msgFromServer ||
-          (status === 400 ? '아이디 또는 비밀번호가 올바르지 않습니다.' :
-            status === 401 ? '인증에 실패했습니다.' :
-              status === 403 ? '접근 권한이 없습니다.' :
-                status === 404 ? 'API 경로를 찾을 수 없습니다.' :
-                  status === 500 ? '서버 오류가 발생했습니다.' :
-                    err?.message || '로그인 중 오류가 발생했습니다.');
+      let msg =
+        msgFromServer ||
+        (status === 400 ? '아이디 또는 비밀번호가 올바르지 않습니다.' :
+          status === 401 ? '인증에 실패했습니다.' :
+            status === 403 ? '접근 권한이 없습니다.' :
+              status === 404 ? 'API 경로를 찾을 수 없습니다.' :
+                status === 500 ? '서버 오류가 발생했습니다.' :
+                  err?.message || '로그인 중 오류가 발생했습니다.');
 
-        setError(msg);
-      } finally {
-        setLoading(false);
-      }
-    },
-    [formData, isLogin, loading, postWithFallback, onLogin, remember]
-  );
+      setError(msg);
+    } finally {
+      setLoading(false);
+    }
+  },
+  [api, formData, isLogin, loading, onLogin, remember]
+);
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-[#1B1F24] text-slate-300">
