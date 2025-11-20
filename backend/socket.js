@@ -5,10 +5,20 @@ const { v4: uuidv4 } = require('uuid');
 const { JWT_SECRET } = require('./config/network');
 const { isAllowedOrigin } = require('./config/cors');
 const { socketLogger, log } = require('./middleware/logger');
-const { loadRooms, saveRooms } = require('./utils/room');
+const { loadRooms } = require('./utils/room');
 
+// 방 목록 (파일에서 로딩)
 let rooms = loadRooms();
 
+// ✅ 전역 io 인스턴스 보관용
+let ioInstance = null;
+
+// ✅ 현재 온라인인 유저 맵: userId -> Set<socketId>
+const onlineUsers = new Map();
+
+/**
+ * Socket.IO 초기화
+ */
 function initSocket(server) {
   const io = new Server(server, {
     cors: {
@@ -21,6 +31,14 @@ function initSocket(server) {
     },
   });
 
+  // 전역 저장
+  ioInstance = io;
+
+  /**
+   * 🔐 인증 미들웨어
+   * - 토큰이 있으면 user 정보 파싱해서 socket.user에 저장
+   * - 없거나 실패하면 guest로 처리
+   */
   io.use((socket, next) => {
     try {
       const token =
@@ -31,10 +49,11 @@ function initSocket(server) {
         socket.user = { userId: 'guest', username: 'Guest' };
         return next();
       }
+
       const user = jwt.verify(token, JWT_SECRET);
       socket.user = user;
       next();
-    } catch {
+    } catch (err) {
       socket.user = { userId: 'guest', username: 'Guest' };
       next();
     }
@@ -42,29 +61,55 @@ function initSocket(server) {
 
   io.on('connection', (socket) => {
     socketLogger(socket);
-    const user = socket.user || { username: 'Unknown' };
-    log.connection('CONNECTED', socket.id, `User: ${user.username}`);
 
+    const user = socket.user || { userId: 'guest', username: 'Unknown' };
+    const userId = user.userId;
+    const username = user.username;
+
+    log.connection('CONNECTED', socket.id, `User: ${username} (${userId})`);
+
+    // ✅ 인증된 유저면 onlineUsers에 등록
+    if (userId && userId !== 'guest') {
+      if (!onlineUsers.has(userId)) {
+        onlineUsers.set(userId, new Set());
+      }
+      onlineUsers.get(userId).add(socket.id);
+
+      log.info(
+        `👤 ONLINE_ADD userId=${userId}, socketId=${socket.id}, totalSockets=${onlineUsers.get(userId).size}`
+      );
+    }
+
+    /**
+     * 방 입장
+     * payload: { roomId, username } 또는 roomId 문자열
+     */
     socket.on('join-room', (payload) => {
       const roomId = typeof payload === 'string' ? payload : payload?.roomId;
-      const username = payload?.username || user.username;
+      const joinedUsername = payload?.username || username || 'Unknown';
+
       if (!roomId) return;
 
-      const room = rooms.find(r => r.id === roomId);
+      const room = rooms.find((r) => r.id === roomId);
       socket.emit('room-info', room || { id: roomId, name: roomId });
       socket.join(roomId);
 
       const systemMsg = {
         id: uuidv4(),
-        message: `${username}님이 들어왔습니다.`,
+        message: `${joinedUsername}님이 들어왔습니다.`,
         userId: 'system',
         username: 'System',
         timestamp: new Date().toISOString(),
         isSystem: true,
       };
+
       io.to(roomId).emit('receive-message', systemMsg);
     });
 
+    /**
+     * 메시지 전송
+     * data: { roomId, message }
+     */
     socket.on('send-message', (data = {}) => {
       const { roomId, message } = data;
       if (!roomId || !message) return;
@@ -72,20 +117,52 @@ function initSocket(server) {
       const msg = {
         id: uuidv4(),
         message,
-        userId: socket.user.userId,
-        username: socket.user.username,
+        userId: userId || 'guest',
+        username: username || 'Guest',
         timestamp: new Date().toISOString(),
       };
 
       io.to(roomId).emit('receive-message', msg);
     });
 
+    /**
+     * 연결 해제
+     */
     socket.on('disconnect', (reason) => {
       log.connection('DISCONNECTED', socket.id, `Reason: ${reason}`);
+
+      // ✅ onlineUsers에서 제거
+      if (userId && userId !== 'guest') {
+        const set = onlineUsers.get(userId);
+        if (set) {
+          set.delete(socket.id);
+          if (set.size === 0) {
+            onlineUsers.delete(userId);
+          }
+        }
+
+        log.info(
+          `👤 ONLINE_REMOVE userId=${userId}, socketId=${socket.id}, remainSockets=${set ? set.size : 0}`
+        );
+      }
     });
   });
 
   return io;
 }
 
-module.exports = { initSocket };
+/**
+ * 라우터 등에서 Socket.IO 인스턴스를 얻기 위한 함수
+ */
+function getIo() {
+  if (!ioInstance) {
+    throw new Error('Socket.IO has not been initialized');
+  }
+  return ioInstance;
+}
+
+module.exports = {
+  initSocket,
+  getIo,
+  onlineUsers,
+};

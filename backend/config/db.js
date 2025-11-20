@@ -4,7 +4,7 @@ const pool = new Pool({
   user: 'postgres',           // PostgreSQL 유저
   host: 'localhost',
   database: 'devsync',        // 이미 만든 DB
-  password: '7984689',  // PostgreSQL 비밀번호
+  password: 'jun09188',  // PostgreSQL 비밀m번호
   port: 5432,
 });
 

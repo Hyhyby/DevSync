@@ -1,4 +1,3 @@
-// src/components/Home/Friends.jsx
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
@@ -6,11 +5,23 @@ import { io } from 'socket.io-client';
 import { API_BASE } from '../../config';
 
 const Friends = ({ user, logo, addFriendIcon, onLogout }) => {
+  // 🔹 더미 데이터 (UI 테스트용)
+  const dummyFriends = [
+    { id: 1, username: 'DevSyncUser' },
+    { id: 2, username: 'StudyBuddy' },
+    { id: 3, username: '코딩친구' },
+  ];
+
   const [friends, setFriends] = useState(() => {
     try {
-      return JSON.parse(localStorage.getItem('friends') || '[]');
+      const stored = JSON.parse(localStorage.getItem('friends') || '[]');
+      // 저장된 값이 있으면 그걸 사용, 없으면 더미 사용
+      if (Array.isArray(stored) && stored.length > 0) {
+        return stored;
+      }
+      return dummyFriends;
     } catch {
-      return [];
+      return dummyFriends;
     }
   });
   const [loadingFriends, setLoadingFriends] = useState(true);
@@ -44,9 +55,14 @@ const Friends = ({ user, logo, addFriendIcon, onLogout }) => {
     try {
       const res = await api.get('/api/friends');
       console.log('[Friends] /api/friends:', res.status, res.data);
-      setFriends(Array.isArray(res.data) ? res.data : []);
+      setFriends(Array.isArray(res.data) && res.data.length > 0 ? res.data : dummyFriends);
     } catch (err) {
-      console.error('[Friends] /api/friends 실패:', err?.response?.data || err?.message);
+      console.error(
+        '[Friends] /api/friends 실패:',
+        err?.response?.data || err?.message
+      );
+      // 실패해도 UI 테스트용으로 더미 유지
+      setFriends((prev) => (prev.length > 0 ? prev : dummyFriends));
     } finally {
       setLoadingFriends(false);
     }
@@ -55,6 +71,7 @@ const Friends = ({ user, logo, addFriendIcon, onLogout }) => {
   useEffect(() => {
     fetchFriends();
   }, [fetchFriends]);
+
   // 친구 목록 업데이트 이벤트 리스너
   useEffect(() => {
     const handler = () => fetchFriends();
@@ -194,9 +211,19 @@ const Friends = ({ user, logo, addFriendIcon, onLogout }) => {
                 <button
                   key={friend.id}
                   onClick={() => joinRoom(friend.id)}
-                  className="w-full text-left p-2 rounded hover:bg-neutral-800 text-gray-300 hover:text-white transition-colors"
+                  className="w-full p-2 rounded hover:bg-neutral-800 text-gray-300 hover:text-white transition-colors"
                 >
-                  {friend.username}
+                  <div className="flex items-center gap-3">
+                    {/* 🔹 프로필 동그라미 (이미지 자리) */}
+                    <div className="w-8 h-8 rounded-full bg-neutral-700 flex items-center justify-center text-[11px] text-gray-300">
+                      {friend.username?.[0]?.toUpperCase() || '?'}
+                    </div>
+
+                    {/* 🔹 닉네임 */}
+                    <span className="text-sm font-medium truncate">
+                      {friend.username}
+                    </span>
+                  </div>
                 </button>
               ))
             )}
