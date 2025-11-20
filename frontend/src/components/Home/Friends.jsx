@@ -55,14 +55,13 @@ const Friends = ({ user, logo, addFriendIcon, onLogout }) => {
     try {
       const res = await api.get('/api/friends');
       console.log('[Friends] /api/friends:', res.status, res.data);
-      setFriends(Array.isArray(res.data) && res.data.length > 0 ? res.data : dummyFriends);
+      setFriends(Array.isArray(res.data) ? res.data : []);
     } catch (err) {
       console.error(
         '[Friends] /api/friends 실패:',
         err?.response?.data || err?.message
       );
-      // 실패해도 UI 테스트용으로 더미 유지
-      setFriends((prev) => (prev.length > 0 ? prev : dummyFriends));
+      setFriends((prev) => prev);
     } finally {
       setLoadingFriends(false);
     }
@@ -142,6 +141,7 @@ const Friends = ({ user, logo, addFriendIcon, onLogout }) => {
 
         setFriendIdentifier('');
         setShowAddFriend(false);
+        window.dispatchEvent(new Event('friend-requests-updated'));
       } catch (err) {
         const msg =
           err.response?.data?.error ||

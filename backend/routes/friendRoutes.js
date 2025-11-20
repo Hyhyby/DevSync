@@ -222,8 +222,8 @@ router.get('/requests', authenticateToken, async (req, res) => {
  *    body: { fromUserId }
  */
 router.post('/requests/accept', authenticateToken, async (req, res) => {
-  const myId = req.user.userId;
-  const { fromUserId } = req.body;
+  const myId = req.user.userId;      // 수락한 사람
+  const { fromUserId } = req.body;   // 요청 보낸 사람
 
   if (!fromUserId) {
     return res.status(400).json({ error: 'fromUserId가 필요합니다.' });
@@ -247,11 +247,46 @@ router.post('/requests/accept', authenticateToken, async (req, res) => {
     }
 
     log.info(`FRIEND_REQUEST_ACCEPT: from=${fromUserId}, to=${myId}`);
+
+    // ⚠️ 1) HTTP 응답 먼저 보내기
     res.json({ ok: true });
+
+    // ⚠️ 2) 이제 두 유저 모두에게 friend-accepted 소켓 이벤트 보내기
+    try {
+      const io = getIo();
+
+      const payload = {
+        fromUserId, // 요청 보낸 사람
+        toUserId: myId, // 수락한 사람
+      };
+
+      // 요청 보낸 사람에게 보내기 (A)
+      const socketsOfFrom = onlineUsers.get(fromUserId);
+      if (socketsOfFrom && socketsOfFrom.size > 0) {
+        for (const sid of socketsOfFrom) {
+          io.to(sid).emit('friend-accepted', payload);
+        }
+      }
+
+      // 수락한 사람에게도 보내기 (B)
+      const socketsOfMe = onlineUsers.get(myId);
+      if (socketsOfMe && socketsOfMe.size > 0) {
+        for (const sid of socketsOfMe) {
+          io.to(sid).emit('friend-accepted', payload);
+        }
+      }
+
+      log.info(
+        `FRIEND_ACCEPT_EMIT to both users: fromUserId=${fromUserId}, toUserId=${myId}`
+      );
+    } catch (socketErr) {
+      log.error('FRIEND_ACCEPT_SOCKET_ERROR', socketErr);
+    }
   } catch (err) {
     log.error('ACCEPT_FRIEND_REQUEST_ERROR', err);
     res.status(500).json({ error: 'Server error' });
   }
 });
+
 
 module.exports = router;

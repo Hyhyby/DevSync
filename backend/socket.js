@@ -36,8 +36,7 @@ function initSocket(server) {
 
   /**
    * 🔐 인증 미들웨어
-   * - 토큰이 있으면 user 정보 파싱해서 socket.user에 저장
-   * - 없거나 실패하면 guest로 처리
+   * - 토큰 없거나 검증 실패하면 연결 거부
    */
   io.use((socket, next) => {
     try {
@@ -46,39 +45,42 @@ function initSocket(server) {
         (socket.handshake.headers['authorization'] || '').split(' ')[1];
 
       if (!token) {
-        socket.user = { userId: 'guest', username: 'Guest' };
-        return next();
+        return next(new Error('NO_TOKEN'));
       }
 
       const user = jwt.verify(token, JWT_SECRET);
+      // user: { userId, username, ... }
       socket.user = user;
       next();
     } catch (err) {
-      socket.user = { userId: 'guest', username: 'Guest' };
-      next();
+      return next(new Error('INVALID_TOKEN'));
     }
   });
 
   io.on('connection', (socket) => {
     socketLogger(socket);
 
-    const user = socket.user || { userId: 'guest', username: 'Unknown' };
+    const user = socket.user;
+    if (!user || !user.userId) {
+      log.warn(`⚠️ CONNECTED WITHOUT USER, socketId=${socket.id}, force disconnect`);
+      socket.disconnect(true);
+      return;
+    }
+
     const userId = user.userId;
     const username = user.username;
 
     log.connection('CONNECTED', socket.id, `User: ${username} (${userId})`);
 
-    // ✅ 인증된 유저면 onlineUsers에 등록
-    if (userId && userId !== 'guest') {
-      if (!onlineUsers.has(userId)) {
-        onlineUsers.set(userId, new Set());
-      }
-      onlineUsers.get(userId).add(socket.id);
-
-      log.info(
-        `👤 ONLINE_ADD userId=${userId}, socketId=${socket.id}, totalSockets=${onlineUsers.get(userId).size}`
-      );
+    // ✅ 인증된 유저를 onlineUsers에 등록
+    if (!onlineUsers.has(userId)) {
+      onlineUsers.set(userId, new Set());
     }
+    onlineUsers.get(userId).add(socket.id);
+
+    log.info(
+      `👤 ONLINE_ADD userId=${userId}, socketId=${socket.id}, totalSockets=${onlineUsers.get(userId).size}`
+    );
 
     /**
      * 방 입장
@@ -117,8 +119,8 @@ function initSocket(server) {
       const msg = {
         id: uuidv4(),
         message,
-        userId: userId || 'guest',
-        username: username || 'Guest',
+        userId,
+        username,
         timestamp: new Date().toISOString(),
       };
 
@@ -131,18 +133,15 @@ function initSocket(server) {
     socket.on('disconnect', (reason) => {
       log.connection('DISCONNECTED', socket.id, `Reason: ${reason}`);
 
-      // ✅ onlineUsers에서 제거
-      if (userId && userId !== 'guest') {
-        const set = onlineUsers.get(userId);
-        if (set) {
-          set.delete(socket.id);
-          if (set.size === 0) {
-            onlineUsers.delete(userId);
-          }
+      const set = onlineUsers.get(userId);
+      if (set) {
+        set.delete(socket.id);
+        const remain = set.size;
+        if (remain === 0) {
+          onlineUsers.delete(userId);
         }
-
         log.info(
-          `👤 ONLINE_REMOVE userId=${userId}, socketId=${socket.id}, remainSockets=${set ? set.size : 0}`
+          `👤 ONLINE_REMOVE userId=${userId}, socketId=${socket.id}, remainSockets=${remain}`
         );
       }
     });

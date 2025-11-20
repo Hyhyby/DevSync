@@ -23,7 +23,7 @@ function getRealIPv4() {
 const ipv4 = getRealIPv4();
 
 const PORT = process.env.PORT || 5000;
-const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
+const JWT_SECRET = process.env.JWT_SECRET || 'access-secret';
 const NGROK_ORIGIN = 'https://winford-subaverage-foreseeingly.ngrok-free.dev';
 
 const ALLOWED_ORIGINS = [

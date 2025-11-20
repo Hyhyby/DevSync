@@ -62,7 +62,14 @@ const Notification = ({ bellIcon, socket: externalSocket }) => {
   useEffect(() => {
     fetchRequests();
   }, [fetchRequests]);
+  useEffect(() => {
+  const handler = () => {
+    fetchRequests();
+  };
 
+  window.addEventListener('friend-requests-updated', handler);
+  return () => window.removeEventListener('friend-requests-updated', handler);
+}, [fetchRequests]);
   // ✅ Socket.IO 연결: 실시간 친구 요청 이벤트 받기
   useEffect(() => {
     if (!token) return;
@@ -97,7 +104,7 @@ const Notification = ({ bellIcon, socket: externalSocket }) => {
       ]);
 
       // 알림창 자동으로 열기
-      setOpen(true);
+    
     };
 
     s.on('connect', handleConnect);
@@ -118,7 +125,7 @@ const Notification = ({ bellIcon, socket: externalSocket }) => {
 
   // 읽지 않은 개수 (원하면 messages 제외하고 계산해도 됨)
   const unreadCount =
-    friendRequestsReceived.length + friendRequestsSent.length + messages.length;
+    friendRequestsReceived.length + friendRequestsSent.length;
 
   // 받은 요청 수락/거절
   const respondRequest = async (fromUserId, action) => {
