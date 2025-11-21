@@ -1,8 +1,19 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+// src/components/Home/Friends.jsx
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { io } from 'socket.io-client';
 import { API_BASE } from '../../config';
+
+import FriendsSidebar from '../ui/FriendsSidebar';
+import AddFriendModal from '../ui/AddFriendModal';
+import FriendRequestResultModal from '../ui/FriendRequestResultModal';
 
 const Friends = ({ user, logo, addFriendIcon, onLogout }) => {
   // 🔹 더미 데이터 (UI 테스트용)
@@ -15,7 +26,6 @@ const Friends = ({ user, logo, addFriendIcon, onLogout }) => {
   const [friends, setFriends] = useState(() => {
     try {
       const stored = JSON.parse(localStorage.getItem('friends') || '[]');
-      // 저장된 값이 있으면 그걸 사용, 없으면 더미 사용
       if (Array.isArray(stored) && stored.length > 0) {
         return stored;
       }
@@ -37,47 +47,50 @@ const Friends = ({ user, logo, addFriendIcon, onLogout }) => {
   const navigate = useNavigate();
   const socketRef = useRef(null);
 
-  const token = sessionStorage.getItem('token') || localStorage.getItem('token');
+  const token =
+    sessionStorage.getItem('token') || localStorage.getItem('token');
 
+  // Axios 인스턴스
   const api = useMemo(
     () =>
-     axios.create({
-      baseURL: API_BASE,
-      timeout: 15000,
-      headers: {
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        'ngrok-skip-browser-warning': 'true',   // 🔥 이제 진짜 헤더로 나감
-      },
-    }),
+      axios.create({
+        baseURL: API_BASE,
+        timeout: 15000,
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          'ngrok-skip-browser-warning': 'true',
+        },
+      }),
     [token]
   );
 
-// 🔹 친구 목록 불러오기 (디버깅 버전)
-const fetchFriends = useCallback(async () => {
-  console.log('[Friends] fetchFriends() 호출됨');
-  try {
-    const res = await api.get('/api/friends');
-    console.log('[Friends] /api/friends 응답:', res.status, res.data);
+  // 🔹 친구 목록 불러오기
+  const fetchFriends = useCallback(async () => {
+    console.log('[Friends] fetchFriends() 호출됨');
+    try {
+      const res = await api.get('/api/friends');
+      console.log('[Friends] /api/friends 응답:', res.status, res.data);
 
-    if (Array.isArray(res.data)) {
-      console.log('[Friends] 배열 길이:', res.data.length);
-      setFriends(res.data);
-    } else {
-      console.warn('[Friends] 예상치 못한 응답 형태:', res.data);
-      setFriends([]);
+      if (Array.isArray(res.data)) {
+        console.log('[Friends] 배열 길이:', res.data.length);
+        setFriends(res.data);
+      } else {
+        console.warn('[Friends] 예상치 못한 응답 형태:', res.data);
+        setFriends([]);
+      }
+    } catch (err) {
+      console.error(
+        '[Friends] /api/friends 실패:',
+        err?.response?.status,
+        err?.response?.data || err?.message
+      );
+      // 실패 시 기존 값 유지
+      setFriends((prev) => prev);
+    } finally {
+      setLoadingFriends(false);
     }
-  } catch (err) {
-    console.error(
-      '[Friends] /api/friends 실패:',
-      err?.response?.status,
-      err?.response?.data || err?.message
-    );
-    // 실패 시 기존 값 유지
-    setFriends((prev) => prev);
-  } finally {
-    setLoadingFriends(false);
-  }
-}, [api]);
+  }, [api]);
+
   useEffect(() => {
     fetchFriends();
   }, [fetchFriends]);
@@ -168,153 +181,32 @@ const fetchFriends = useCallback(async () => {
 
   return (
     <>
-      <aside className="w-64 bg-neutral-900 flex flex-col border-r border-neutral-800">
-        {/* Logo */}
-        <div className="p-4 pb-2 border-b border-neutral-800">
-          <img
-            src={logo}
-            alt="DevSync Logo"
-            className="w-10 h-10 object-contain drop-shadow-[0_0_6px_#F9E4BC]"
-          />
-        </div>
+      <FriendsSidebar
+        user={user}
+        logo={logo}
+        addFriendIcon={addFriendIcon}
+        friends={friends}
+        loadingFriends={loadingFriends}
+        onAddFriendClick={() => setShowAddFriend(true)}
+        onJoinRoom={joinRoom}
+        onLogout={onLogout}
+      />
 
-        {/* Profile */}
-        <div className="p-4 border-b border-neutral-800 flex flex-col items-center gap-2">
-          <div className="relative">
-            <div className="w-16 h-16 rounded-full bg-neutral-700 flex items-center justify-center text-gray-400 text-sm">
-              IMG
-            </div>
-            <span className="absolute bottom-0 right-0 w-4 h-4 bg-green-500 border-2 border-neutral-900 rounded-full" />
-          </div>
-          <p className="text-white font-semibold text-sm">
-            {user?.username || 'Guest'}
-          </p>
-          <p className="text-gray-500 text-xs">@{user?.username || 'guest'}</p>
-        </div>
+      <AddFriendModal
+        open={showAddFriend}
+        friendIdentifier={friendIdentifier}
+        onChangeFriendIdentifier={setFriendIdentifier}
+        onClose={() => {
+          setShowAddFriend(false);
+          setFriendIdentifier('');
+        }}
+        onSubmit={handleAddFriend}
+      />
 
-        {/* Friends List */}
-        <div className="flex-1 p-4 space-y-3">
-          <div className="flex justify-between items-center">
-            <h2 className="text-white font-semibold">Friends</h2>
-            <button
-              onClick={() => setShowAddFriend(true)}
-              className="p-1 hover:bg-neutral-800 rounded transition"
-              aria-label="Add friend"
-              title="Add friend"
-            >
-              <img
-                src={addFriendIcon}
-                alt="Add Friend"
-                className="w-5 h-5 opacity-80 hover:opacity-100"
-              />
-            </button>
-          </div>
-
-          <div className="space-y-1">
-            {loadingFriends ? (
-              <div className="text-gray-500 text-sm">Loading friends…</div>
-            ) : friends.length === 0 ? (
-              <div className="text-gray-500 text-sm">
-                No friends yet. Click <span className="text-yellow-400">+</span> to add one.
-              </div>
-            ) : (
-              friends.map((friend) => (
-                <button
-                  key={friend.id}
-                  onClick={() => joinRoom(friend.id)}
-                  className="w-full p-2 rounded hover:bg-neutral-800 text-gray-300 hover:text-white transition-colors"
-                >
-                  <div className="flex items-center gap-3">
-                    {/* 🔹 프로필 동그라미 (이미지 자리) */}
-                    <div className="w-8 h-8 rounded-full bg-neutral-700 flex items-center justify-center text-[11px] text-gray-300">
-                      {friend.username?.[0]?.toUpperCase() || '?'}
-                    </div>
-
-                    {/* 🔹 닉네임 */}
-                    <span className="text-sm font-medium truncate">
-                      {friend.username}
-                    </span>
-                  </div>
-                </button>
-              ))
-            )}
-          </div>
-        </div>
-
-        <div className="p-4 border-t border-neutral-800">
-          <button
-            onClick={onLogout}
-            className="w-full p-2 bg-red-600 hover:bg-red-500 rounded text-white transition-colors"
-          >
-            Logout
-          </button>
-        </div>
-      </aside>
-
-      {/* 친구 추가 모달 */}
-      {showAddFriend && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
-          <div className="w-full max-w-sm rounded-lg bg-neutral-900 border border-neutral-700 p-5 shadow-xl">
-            <h3 className="text-white text-lg font-semibold mb-2">Add Friend</h3>
-            <p className="text-sm text-gray-400 mb-4">
-              Enter your friend&apos;s DevSync tag or email to send a friend request.
-            </p>
-
-            <form onSubmit={handleAddFriend} className="space-y-4">
-              <input
-                type="text"
-                value={friendIdentifier}
-                onChange={(e) => setFriendIdentifier(e.target.value)}
-                placeholder="e.g. username#0001 or email"
-                className="w-full p-2 bg-neutral-800 border border-neutral-700 rounded text-white placeholder-gray-500 focus:outline-none focus:border-yellow-400 text-sm"
-                autoFocus
-              />
-
-              <div className="flex justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowAddFriend(false);
-                    setFriendIdentifier('');
-                  }}
-                  className="px-3 py-1.5 rounded bg-neutral-800 text-gray-300 text-sm hover:bg-neutral-700"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="px-3 py-1.5 rounded bg-yellow-400 text-black text-sm font-semibold hover:bg-yellow-300"
-                >
-                  Send Request
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* ✅ 친구 요청 결과 모달 (성공/실패 공통) */}
-      {requestResult && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
-          <div className="w-full max-w-xs bg-neutral-900 border border-neutral-700 rounded-lg p-4 text-center">
-            <p
-              className={
-                requestResult.type === 'success'
-                  ? 'text-green-400 text-sm'
-                  : 'text-red-400 text-sm'
-              }
-            >
-              {requestResult.message}
-            </p>
-            <button
-              onClick={() => setRequestResult(null)}
-              className="mt-4 px-3 py-1.5 bg-neutral-700 rounded text-xs text-gray-200 hover:bg-neutral-600"
-            >
-              확인
-            </button>
-          </div>
-        </div>
-      )}
+      <FriendRequestResultModal
+        result={requestResult}
+        onClose={() => setRequestResult(null)}
+      />
     </>
   );
 };
