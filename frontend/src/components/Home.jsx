@@ -1,21 +1,20 @@
 // src/Home.jsx  (또는 src/pages/Home.jsx 인 프로젝트 구조에 맞게)
-import React from 'react';
+import React from "react";
+import { useNavigate } from "react-router-dom";
+import logo from "../../assets/devsync-logo.png";
+import addFriendIcon from "../../assets/person_add.png";
+import bellIcon from "../../assets/notification.png";
 
-import logo from '../../assets/devsync-logo.png';
-import addFriendIcon from '../../assets/person_add.png';
-import bellIcon from '../../assets/notification.png';
-
-import Friends from './Home/Friends';
-import Notification from './Home/Notification';
-import Layout from './Home/Layout';
-import ServersBar from './Home/Servers';
+import Friends from "./Home/Friends";
+import Notification from "./Home/Notification";
+import Layout from "./Home/Layout";
+import ServersBar from "./Home/Servers";
 
 const Home = ({ user, onLogout }) => {
-   const handleSelectServer = (server) => {
-    console.log('선택된 서버:', server);
-    // 나중에:
-    // navigate(`/servers/${server.id}`)
-    // 또는 서버별 채널/채팅 화면으로 라우팅
+  const navigate = useNavigate();
+  const handleSelectServer = (server) => {
+    console.log("선택된 서버:", server);
+    navigate(`/servers/${server.id}`);
   };
   return (
     <div className="min-h-screen bg-black flex">
@@ -33,9 +32,9 @@ const Home = ({ user, onLogout }) => {
       {/* ⭐ 메인 영역 Wrapper 추가 ⭐ */}
       <div className="flex-1 relative flex justify-center items-center">
         <Layout logo={logo} />
-      {/* 화면 아래 가로 서버 바 */}
-      <ServersBar onSelectServer={handleSelectServer} />
-    </div>
+        {/* 화면 아래 가로 서버 바 */}
+        <ServersBar onSelectServer={handleSelectServer} />
+      </div>
     </div>
   );
 };

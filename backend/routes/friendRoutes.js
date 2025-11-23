@@ -288,6 +288,81 @@ router.post('/requests/accept', authenticateToken, async (req, res) => {
     res.status(500).json({ error: 'Server error' });
   }
 });
+/**
+ * 5) 친구 요청 거절
+ *    POST /api/friends/requests/decline
+ *    body: { fromUserId }
+ */
+router.post('/requests/decline', authenticateToken, async (req, res) => {
+  const myId = req.user.userId;      // 거절하는 사람 (나)
+  const { fromUserId } = req.body;   // 요청 보낸 사람
+
+  if (!fromUserId) {
+    return res.status(400).json({ error: 'fromUserId가 필요합니다.' });
+  }
+
+  try {
+    // pending 상태인 요청만 삭제
+    const result = await pool.query(
+      `
+      DELETE FROM friends
+      WHERE user_index = $1
+        AND friend_index = $2
+        AND status = 'pending'
+      RETURNING *
+      `,
+      [fromUserId, myId]
+    );
+
+    if (result.rowCount === 0) {
+      return res
+        .status(404)
+        .json({ error: '해당 친구 요청을 찾을 수 없습니다.' });
+    }
+
+    log.info(`FRIEND_REQUEST_DECLINE: from=${fromUserId}, to=${myId}`);
+
+    // 1) HTTP 응답
+    res.json({ ok: true });
+
+    // 2) 소켓으로 "거절됨" 알림 보내기 (요청 보낸 쪽 → 보낸 목록에서 제거)
+    try {
+      const io = getIo();
+
+      const payload = {
+        fromUserId,  // 요청 보낸 사람
+        toUserId: myId, // 거절한 사람
+      };
+
+      const socketsOfFrom = onlineUsers.get(fromUserId);
+      if (socketsOfFrom && socketsOfFrom.size > 0) {
+        for (const sid of socketsOfFrom) {
+          io.to(sid).emit('friend-declined', payload);
+        }
+      }
+
+      // (선택) 나 자신에게도 보내고 싶으면 아래 주석 해제
+      /*
+      const socketsOfMe = onlineUsers.get(myId);
+      if (socketsOfMe && socketsOfMe.size > 0) {
+        for (const sid of socketsOfMe) {
+          io.to(sid).emit('friend-declined', payload);
+        }
+      }
+      */
+
+      log.info(
+        `FRIEND_DECLINE_EMIT: fromUserId=${fromUserId}, toUserId=${myId}`
+      );
+    } catch (socketErr) {
+      log.error('FRIEND_DECLINE_SOCKET_ERROR', socketErr);
+    }
+  } catch (err) {
+    log.error('DECLINE_FRIEND_REQUEST_ERROR', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 
 
 module.exports = router;

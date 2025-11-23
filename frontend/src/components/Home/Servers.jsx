@@ -1,18 +1,27 @@
-// src/components/Home/ServersBar.jsx
-import React, { useEffect, useState } from 'react';
+// src/components/Server/Servers.jsx
 
-// 기본 예시 서버들 (나중에 백엔드 연결하면 지워도 됨)
+import React, { useEffect, useState /*, useMemo */ } from "react";
+// 🔽 나중에 백엔드 붙일 때 주석 해제
+// import axios from "axios";
+// import { API_BASE } from "../../config";
+import ServersList from "../ui/ServersList";
+import CreateServerModal from "../ui/CreateServerModal";
+
 const DEFAULT_SERVERS = [
-  { id: 'devsync', name: 'DevSync', short: 'D' },
-  { id: 'study', name: '스터디', short: '스' },
-  { id: 'study2', name: '공부', short: '공' },
-  { id: 'football', name: '풋뱅', short: '풋' },
+  { id: "devsync", name: "DevSync", short: "D" },
+  { id: "study", name: "스터디", short: "스" },
+  { id: "study2", name: "공부", short: "공" },
+  { id: "football", name: "풋뱅", short: "풋" },
 ];
 
-const STORAGE_KEY = 'devsync_servers';
+const STORAGE_KEY = "devsync_servers";
 
-const ServersBar = ({ onSelectServer }) => {
+// 🔹 지금은 프론트 전용 모드 (로컬스토리지만 사용)
+//    나중에 백엔드 붙일 때 참고용 코드도 아래에 주석으로 넣어둠
+const ServersBar = ({ onSelectServer, variant = "footer" }) => {
+  // ----- 상태 -----
   const [servers, setServers] = useState(() => {
+    // 앱 처음 켜질 때: localStorage에 있으면 그걸 쓰고, 없으면 기본 서버 사용
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
       return saved ? JSON.parse(saved) : DEFAULT_SERVERS;
@@ -20,20 +29,22 @@ const ServersBar = ({ onSelectServer }) => {
       return DEFAULT_SERVERS;
     }
   });
+  const [loading] = useState(false); // 지금은 프론트 전용이라 로딩X
 
   const [openCreate, setOpenCreate] = useState(false);
-  const [serverName, setServerName] = useState('');
-  const [serverEmoji, setServerEmoji] = useState('');
+  const [serverName, setServerName] = useState("");
+  const [serverEmoji, setServerEmoji] = useState("");
 
-  // 서버 목록 로컬 저장
+  // ----- 로컬스토리지 동기화 -----
   useEffect(() => {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(servers));
-    } catch {
-      // 저장 실패해도 크게 문제는 없음
+    } catch (e) {
+      console.error("[Servers] localStorage 저장 실패:", e);
     }
   }, [servers]);
 
+  // ----- 서버 생성 (+ 버튼) -----
   const handleCreateServer = (e) => {
     e.preventDefault();
     const name = serverName.trim();
@@ -43,122 +54,163 @@ const ServersBar = ({ onSelectServer }) => {
     const short = emoji || name.charAt(0).toUpperCase();
 
     const newServer = {
-      id: `local-${Date.now()}`,
+      id: `local-${Date.now()}`, // 임시 ID (로컬 전용)
       name,
       short,
     };
 
     setServers((prev) => [...prev, newServer]);
-    setServerName('');
-    setServerEmoji('');
+
+    setServerName("");
+    setServerEmoji("");
     setOpenCreate(false);
   };
 
-  const handleClickServer = (server) => {
-    if (onSelectServer) onSelectServer(server);
-    // 여기서 나중에 navigate(`/servers/${server.id}`) 같은 거 연결 가능
+  // =====================================================================
+  // 🧩 [참고용] 나중에 백엔드 붙일 때 쓸 코드 (지금은 전부 주석 처리)
+  // =====================================================================
+
+  /*
+  const token =
+    sessionStorage.getItem("token") || localStorage.getItem("token");
+
+  const api = useMemo(
+    () =>
+      axios.create({
+        baseURL: API_BASE,
+        timeout: 15000,
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          "ngrok-skip-browser-warning": "true",
+        },
+      }),
+    [token]
+  );
+
+  // 🔹 서버 목록 불러오기 (백엔드 버전)
+  useEffect(() => {
+    const fetchServers = async () => {
+      // 로그인 안 되어 있으면 그냥 로컬/더미 사용
+      if (!token) {
+        try {
+          const saved = localStorage.getItem(STORAGE_KEY);
+          if (saved) {
+            setServers(JSON.parse(saved));
+          } else {
+            setServers(DEFAULT_SERVERS);
+          }
+        } catch {
+          setServers(DEFAULT_SERVERS);
+        } finally {
+          setLoading(false);
+        }
+        return;
+      }
+
+      try {
+        const res = await api.get("/api/servers");
+        const list = Array.isArray(res.data) ? res.data : [];
+
+        const mapped = list.map((s) => ({
+          ...s,
+          short: s.iconUrl || s.name?.trim()?.charAt(0)?.toUpperCase() || "?",
+        }));
+
+        setServers(mapped);
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(mapped));
+      } catch (err) {
+        console.error(
+          "[Servers] GET /api/servers 실패:",
+          err?.response?.data || err?.message
+        );
+
+        // 실패하면 로컬/기본 서버로 폴백
+        try {
+          const saved = localStorage.getItem(STORAGE_KEY);
+          setServers(saved ? JSON.parse(saved) : DEFAULT_SERVERS);
+        } catch {
+          setServers(DEFAULT_SERVERS);
+        }
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchServers();
+  }, [api, token]);
+
+  // 🔹 서버 생성 (+ 버튼 눌렀을 때, 백엔드 버전)
+  const handleCreateServer = async (e) => {
+    e.preventDefault();
+    const name = serverName.trim();
+    if (!name) return;
+
+    const emoji = serverEmoji.trim();
+    try {
+      let created;
+
+      if (token) {
+        // 백엔드에 실제 서버 생성
+        const res = await api.post("/api/servers", {
+          name,
+          iconUrl: emoji || null,
+        });
+        const s = res.data;
+        created = {
+          ...s,
+          short: emoji || s.name?.charAt(0)?.toUpperCase() || "?",
+        };
+      } else {
+        // 로그인 안된 디자인 모드일 때는 프론트에서만 더미로
+        created = {
+          id: `local-${Date.now()}`,
+          name,
+          iconUrl: null,
+          short: emoji || name.charAt(0).toUpperCase(),
+        };
+      }
+
+      setServers((prev) => {
+        const next = [...prev, created];
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+        return next;
+      });
+
+      setServerName("");
+      setServerEmoji("");
+      setOpenCreate(false);
+    } catch (err) {
+      console.error(
+        "[Servers] POST /api/servers 실패:",
+        err?.response?.data || err?.message
+      );
+    }
   };
+  */
+
+  // =====================================================================
 
   return (
     <>
-      {/* 🔹 화면 맨 아래에 깔리는 서버 바 */}
-      <div className="pointer-events-none absolute bottom-6 left-1/2 -translate-x-1/2 z-40">
-  <div className="pointer-events-auto flex items-center gap-3 overflow-x-auto no-scrollbar">
-          <div className="bg-neutral-950/95 border border-neutral-800 rounded-2xl px-3 py-2 shadow-[0_0_18px_rgba(0,0,0,0.8)]">
-            <div className="flex items-center gap-3 overflow-x-auto no-scrollbar">
-              {/* + 서버 만들기 버튼 */}
-              <button
-                type="button"
-                onClick={() => setOpenCreate(true)}
-                className="flex-shrink-0 w-10 h-10 rounded-full bg-neutral-800 border border-neutral-600 text-white text-2xl font-semibold flex items-center justify-center hover:bg-neutral-700 hover:border-yellow-400 hover:text-yellow-300 transition-all"
-                title="서버 만들기"
-              >
-                +
-              </button>
+      {/* 서버 리스트 + + 버튼 UI */}
+      <ServersList
+        servers={servers}
+        loading={loading}
+        onClickServer={onSelectServer}
+        onOpenCreate={() => setOpenCreate(true)}
+        variant={variant}
+      />
 
-              {/* 서버 아이콘들 */}
-              {servers.map((server) => (
-                <button
-                  key={server.id}
-                  type="button"
-                  onClick={() => handleClickServer(server)}
-                  className="flex-shrink-0 group relative"
-                  title={server.name}
-                >
-                  <div className="w-10 h-10 rounded-full bg-neutral-800 border border-neutral-700 flex items-center justify-center text-sm font-semibold text-gray-200 group-hover:bg-yellow-400 group-hover:text-black group-hover:border-yellow-300 transition-all">
-                    {server.short}
-                  </div>
-                  <span className="absolute -top-7 left-1/2 -translate-x-1/2 whitespace-nowrap text-[10px] px-2 py-0.5 rounded bg-black/80 text-gray-200 opacity-0 group-hover:opacity-100 transition-opacity">
-                    {server.name}
-                  </span>
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* 🔹 서버 생성 모달 */}
-      {openCreate && (
-        <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center">
-          <div className="w-full max-w-sm bg-neutral-900 border border-neutral-700 rounded-xl p-5 shadow-xl">
-            <h3 className="text-white text-lg font-semibold mb-2">
-              새 서버 만들기
-            </h3>
-            <p className="text-gray-400 text-xs mb-4">
-              서버 이름과 (선택) 이모지를 입력하면 홈 화면 아래 서버 바에 추가됩니다.
-            </p>
-
-            <form onSubmit={handleCreateServer} className="space-y-3">
-              <div className="space-y-1">
-                <label className="text-xs text-gray-300">서버 이름</label>
-                <input
-                  type="text"
-                  value={serverName}
-                  onChange={(e) => setServerName(e.target.value)}
-                  className="w-full px-3 py-2 rounded bg-neutral-800 border border-neutral-700 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-yellow-400"
-                  placeholder="예: 공부, 풋뱅, 롤친구방…"
-                  autoFocus
-                />
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-xs text-gray-300">
-                  서버 아이콘 (이모지/한 글자, 선택)
-                </label>
-                <input
-                  type="text"
-                  value={serverEmoji}
-                  onChange={(e) => setServerEmoji(e.target.value)}
-                  maxLength={2}
-                  className="w-24 px-3 py-2 rounded bg-neutral-800 border border-neutral-700 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-yellow-400"
-                  placeholder="🐥 / 스"
-                />
-              </div>
-
-              <div className="flex justify-end gap-2 pt-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setOpenCreate(false);
-                    setServerName('');
-                    setServerEmoji('');
-                  }}
-                  className="px-3 py-1.5 rounded bg-neutral-800 text-xs text-gray-300 hover:bg-neutral-700"
-                >
-                  취소
-                </button>
-                <button
-                  type="submit"
-                  className="px-3 py-1.5 rounded bg-yellow-400 text-xs font-semibold text-black hover:bg-yellow-300"
-                >
-                  만들기
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
+      {/* 서버 생성 모달 */}
+      <CreateServerModal
+        open={openCreate}
+        serverName={serverName}
+        serverEmoji={serverEmoji}
+        onChangeServerName={setServerName}
+        onChangeServerEmoji={setServerEmoji}
+        onClose={() => setOpenCreate(false)}
+        onSubmit={handleCreateServer}
+      />
     </>
   );
 };
