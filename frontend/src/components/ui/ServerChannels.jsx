@@ -1,7 +1,12 @@
 // src/components/ui/ServerChannels.jsx
 import React from "react";
 
-const ServerChannels = ({ textChannels, voiceChannels }) => {
+const ServerChannels = ({
+  textChannels = [],
+  voiceChannels = [],
+  activeChannelId,
+  onSelectChannel,
+}) => {
   return (
     <aside className="w-64 bg-[#111214] border-r border-neutral-900 flex flex-col">
       <div className="px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wide">
@@ -17,7 +22,12 @@ const ServerChannels = ({ textChannels, voiceChannels }) => {
           {textChannels.map((ch) => (
             <button
               key={ch.id}
-              className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-neutral-800 text-gray-200 text-sm transition-colors"
+              onClick={() => onSelectChannel && onSelectChannel(ch)}
+              className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-sm transition-colors ${
+                ch.id === activeChannelId
+                  ? "bg-neutral-800 text-white"
+                  : "hover:bg-neutral-800 text-gray-200"
+              }`}
             >
               <span className="text-lg text-gray-500">#</span>
               <span className="truncate">{ch.name}</span>
@@ -33,7 +43,12 @@ const ServerChannels = ({ textChannels, voiceChannels }) => {
           {voiceChannels.map((ch) => (
             <button
               key={ch.id}
-              className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-neutral-800 text-gray-200 text-sm transition-colors"
+              onClick={() => onSelectChannel && onSelectChannel(ch)}
+              className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-sm transition-colors ${
+                ch.id === activeChannelId
+                  ? "bg-neutral-800 text-white"
+                  : "hover:bg-neutral-800 text-gray-200"
+              }`}
             >
               <span className="text-lg text-gray-500">🔊</span>
               <span className="truncate">{ch.name}</span>
