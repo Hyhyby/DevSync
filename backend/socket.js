@@ -1,19 +1,14 @@
 // socket.js (Socket.IO 설정 담당)
 const { Server } = require('socket.io');
 const jwt = require('jsonwebtoken');
-const { v4: uuidv4 } = require('uuid');
 const { JWT_SECRET } = require('./config/network');
 const { isAllowedOrigin } = require('./config/cors');
 const { socketLogger, log } = require('./middleware/logger');
-const { loadRooms } = require('./utils/room');
 
-// 방 목록 (파일에서 로딩)
-let rooms = loadRooms();
+const registerChannelHandlers = require('./sockets/channel');
+const registerDmHandlers = require('./sockets/dm');
 
-// ✅ 전역 io 인스턴스 보관용
 let ioInstance = null;
-
-// ✅ 현재 온라인인 유저 맵: userId -> Set<socketId>
 const onlineUsers = new Map();
 
 /**
@@ -81,51 +76,10 @@ function initSocket(server) {
     log.info(
       `👤 ONLINE_ADD userId=${userId}, socketId=${socket.id}, totalSockets=${onlineUsers.get(userId).size}`
     );
-
-    /**
-     * 방 입장
-     * payload: { roomId, username } 또는 roomId 문자열
-     */
-    socket.on('join-room', (payload) => {
-      const roomId = typeof payload === 'string' ? payload : payload?.roomId;
-      const joinedUsername = payload?.username || username || 'Unknown';
-
-      if (!roomId) return;
-
-      const room = rooms.find((r) => r.id === roomId);
-      socket.emit('room-info', room || { id: roomId, name: roomId });
-      socket.join(roomId);
-
-      const systemMsg = {
-        id: uuidv4(),
-        message: `${joinedUsername}님이 들어왔습니다.`,
-        userId: 'system',
-        username: 'System',
-        timestamp: new Date().toISOString(),
-        isSystem: true,
-      };
-
-      io.to(roomId).emit('receive-message', systemMsg);
-    });
-
-    /**
-     * 메시지 전송
-     * data: { roomId, message }
-     */
-    socket.on('send-message', (data = {}) => {
-      const { roomId, message } = data;
-      if (!roomId || !message) return;
-
-      const msg = {
-        id: uuidv4(),
-        message,
-        userId,
-        username,
-        timestamp: new Date().toISOString(),
-      };
-
-      io.to(roomId).emit('receive-message', msg);
-    });
+    
+    // 채널 및 DM 핸들러 등록
+    registerChannelHandlers(io, socket);
+    registerDmHandlers(io, socket);
 
     /**
      * 연결 해제

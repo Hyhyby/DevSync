@@ -24,10 +24,11 @@ const ipv4 = getRealIPv4();
 
 const PORT = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET || 'access-secret';
-const NGROK_ORIGIN = 'https://commensurately-preflagellate-merissa.ngrok-free.dev';
+const NGROK_ORIGIN = 'https://winford-subaverage-foreseeingly.ngrok-free.dev';
 
 const ALLOWED_ORIGINS = [
   'http://localhost:3000',
+  'http://localhost:3001',
   'http://localhost:5000',
   'http://localhost:5173',
   `http://${ipv4}:3000`,

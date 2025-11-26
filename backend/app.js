@@ -11,6 +11,7 @@ const serverRoutes = require('./routes/serverRoutes');
 const channelRoutes = require('./routes/channelRoutes');
 const messageRoutes = require('./routes/messageRoutes');
 const dmRoutes = require('./routes/dmRoutes');
+const serverInviteRoutes = require('./routes/serverInviteRoutes');
 
 const app = express();
 
@@ -25,6 +26,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/friends', friendRoutes);
 app.use('/api/servers', serverRoutes);
+app.use('/api/servers', serverInviteRoutes);
 app.use('/api/:serverId/channels', channelRoutes);
 app.use('/api/:serverId/messages', messageRoutes);
 app.use('/api/:serverId/dm', dmRoutes);

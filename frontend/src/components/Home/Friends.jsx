@@ -16,13 +16,6 @@ import AddFriendModal from '../ui/AddFriendModal';
 import FriendRequestResultModal from '../ui/FriendRequestResultModal';
 
 const Friends = ({ user, logo, addFriendIcon, onLogout }) => {
-  // 🔹 더미 데이터 (UI 테스트용)
-  const dummyFriends = [
-    { id: 1, username: 'DevSyncUser' },
-    { id: 2, username: 'StudyBuddy' },
-    { id: 3, username: '코딩친구' },
-  ];
-
   const [friends, setFriends] = useState(() => {
     try {
       const stored = JSON.parse(localStorage.getItem('friends') || '[]');
