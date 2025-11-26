@@ -34,7 +34,6 @@ router.post("/", authenticateToken, async (req, res) => {
   }
 
   try {
-    // 서버 생성
     const result = await pool.query(
       `
       INSERT INTO servers (name, icon_url, owner_id)
@@ -46,7 +45,6 @@ router.post("/", authenticateToken, async (req, res) => {
 
     const server = result.rows[0];
 
-    // 서버 멤버(owner)로 추가
     await pool.query(
       `
       INSERT INTO server_members (server_id, user_id, role)
@@ -92,12 +90,75 @@ router.get("/", authenticateToken, async (req, res) => {
 });
 
 /**
+ * 📌 서버 멤버 목록
+ * GET /api/servers/:serverId/members
+ */
+router.get("/:serverId/members", authenticateToken, async (req, res) => {
+  const serverId = parseInt(req.params.serverId, 10);
+  const userId = req.user.userId;
+
+  if (isNaN(serverId)) {
+    return res.status(400).json({ error: `Invalid serverId: ${req.params.serverId}` });
+  }
+
+  try {
+    const check = await pool.query(
+      `
+      SELECT 1
+      FROM server_members
+      WHERE server_id = $1 AND user_id = $2
+      `,
+      [serverId, userId]
+    );
+
+    if (check.rowCount === 0) {
+      return res
+        .status(403)
+        .json({ error: "이 서버의 멤버가 아니라 멤버 목록을 볼 수 없습니다." });
+    }
+
+    const result = await pool.query(
+      `
+      SELECT 
+        u.id,
+        u.username AS name,
+        sm.role,
+        sm.joined_at
+      FROM server_members sm
+      JOIN users u ON u.id = sm.user_id
+      WHERE sm.server_id = $1
+      ORDER BY 
+        CASE WHEN sm.role = 'owner' THEN 0 ELSE 1 END,
+        u.username ASC
+      `,
+      [serverId]
+    );
+
+    const members = result.rows.map((row) => ({
+      id: row.id,
+      name: row.name,
+      role: row.role,
+      joinedAt: row.joined_at,
+    }));
+
+    return res.json(members);
+  } catch (err) {
+    log.error?.("SERVER_MEMBERS_ERR", err);
+    return res.status(500).json({ error: "Failed to load server members" });
+  }
+});
+
+/**
  * 📌 특정 서버 정보
  * GET /api/servers/:serverId
  */
 router.get("/:serverId", authenticateToken, async (req, res) => {
-  const serverId = req.params.serverId;
+  const serverId = parseInt(req.params.serverId, 10);
   const userId = req.user.userId;
+
+  if (isNaN(serverId)) {
+    return res.status(400).json({ error: `Invalid serverId: ${req.params.serverId}` });
+  }
 
   try {
     const result = await pool.query(
@@ -137,7 +198,6 @@ router.patch("/:serverId", authenticateToken, async (req, res) => {
   const userId = req.user.userId;
 
   try {
-    // Owner 확인
     const check = await pool.query(
       `SELECT owner_id FROM servers WHERE id = $1`,
       [serverId]
@@ -149,7 +209,6 @@ router.patch("/:serverId", authenticateToken, async (req, res) => {
     if (check.rows[0].owner_id !== userId)
       return res.status(403).json({ error: "No permission" });
 
-    // 업데이트할 필드 구성
     const fields = [];
     const values = [];
     let idx = 1;
@@ -215,6 +274,26 @@ router.delete("/:serverId", authenticateToken, async (req, res) => {
     log.error?.("SERVER_DELETE_ERR", err);
     return res.status(500).json({ error: "Failed to delete server" });
   }
+});
+
+/**
+ * 📌 안전 라우트
+ * serverId가 숫자가 아닌 접근 시 처리
+ */
+router.all("/:serverId/*", (req, res) => {
+  const serverId = req.params.serverId;
+  if (isNaN(parseInt(serverId, 10))) {
+    return res.status(400).json({ error: `Invalid serverId: ${serverId}` });
+  }
+  return res.status(404).json({ error: "Not found" });
+});
+
+router.all("/:serverId", (req, res) => {
+  const serverId = req.params.serverId;
+  if (isNaN(parseInt(serverId, 10))) {
+    return res.status(400).json({ error: `Invalid serverId: ${serverId}` });
+  }
+  return res.status(404).json({ error: "Not found" });
 });
 
 module.exports = router;

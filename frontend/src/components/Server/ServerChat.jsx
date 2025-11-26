@@ -28,13 +28,22 @@ const ServerChat = ({ user, roomId, roomName }) => {
 
     const handleConnect = () => {
       socket.emit("join-room", {
-        roomId, // 지금은 서버/채널 id를 roomId로 사용
+        roomId,
         username: user?.username || "Unknown",
       });
     };
 
     const handleReceive = (msg) => {
-      setMessages((prev) => [...prev, msg]);
+      // 내 메시지는 중복 추가 방지
+      setMessages((prev) => {
+        const exists = prev.some(
+          (m) =>
+            m.id === msg.id ||
+            (m.username === msg.username && m.message === msg.message)
+        );
+        if (exists) return prev;
+        return [...prev, msg];
+      });
     };
 
     const handleError = (err) => {
@@ -75,7 +84,7 @@ const ServerChat = ({ user, roomId, roomName }) => {
       behavior: "instant",
       block: "end",
     });
-    setMessages([]); // 채널 변경 시 이전 채팅 비우고 싶으면 유지
+    setMessages([]); // 채널 변경 시 이전 채팅 초기화
   }, [roomId]);
 
   // 메시지 전송
@@ -95,33 +104,18 @@ const ServerChat = ({ user, roomId, roomName }) => {
       message: text,
       userId: user?.id || "unknown",
       username: user?.username || "Unknown",
+      id: Date.now(), // 임시 ID, 서버에서 다시 부여 가능
+      timestamp: new Date().toISOString(),
     };
 
+    // 로컬에 바로 추가하지 않고 서버 이벤트만 전송
     socket.emit("send-message", messageData);
-
-    setMessages((prev) => [
-      ...prev,
-      {
-        ...messageData,
-        id: Date.now(),
-        timestamp: new Date().toISOString(),
-      },
-    ]);
 
     setInput("");
   };
 
   return (
     <div className="flex-1 flex flex-col bg-[#050608]">
-      {/* 상단 채널 이름 부분은 ServerPage에서 이미 있으니까 여기선 생략해도 되고,
-          필요하면 아래 주석 풀어서 쓸 수도 있음 */}
-      {/* 
-      <header className="h-12 border-b border-neutral-900 px-4 flex items-center">
-        <span className="text-lg mr-2 text-gray-400">#</span>
-        <span className="font-semibold text-sm">{roomName}</span>
-      </header>
-      */}
-
       {/* 메시지 영역 */}
       <div
         ref={messagesWrapRef}
@@ -134,8 +128,7 @@ const ServerChat = ({ user, roomId, roomName }) => {
           return (
             <div
               key={msg.id || index}
-              className={`flex items-start ${isOwn ? "justify-end" : "justify-start"
-                } gap-3`}
+              className={`flex items-start ${isOwn ? "justify-end" : "justify-start"} gap-3`}
             >
               {/* 상대방 아바타 */}
               {!isOwn && (
