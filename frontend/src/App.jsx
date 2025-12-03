@@ -7,32 +7,47 @@ import {
 import { useState, useEffect } from "react";
 import Login from "./components/Login";
 import Home from "./components/Home";
-import Chat from "./components/Chat";
 import ServerPage from "./components/Server/ServerPage";
+import DirectMessage from "./components/DM/DirectMessage";
 
 function App() {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const token = sessionStorage.getItem("token");
-    const userData = sessionStorage.getItem("user");
+    // 🔥 새 탭/창에서도 읽을 수 있게 localStorage까지 확인
+    const token =
+      sessionStorage.getItem("token") || localStorage.getItem("token");
+    const userData =
+      sessionStorage.getItem("user") || localStorage.getItem("user");
+
     if (token && userData) {
-      setUser(JSON.parse(userData));
+      try {
+        setUser(JSON.parse(userData));
+      } catch {
+        console.warn("USER_PARSE_FAILED");
+      }
     }
     setLoading(false);
   }, []);
 
   const handleLogin = (userData, token) => {
     setUser(userData);
-    sessionStorage.setItem("user", JSON.stringify(userData));
+
+    // 🔥 둘 다에 저장 (간단 버전)
+    const serialized = JSON.stringify(userData);
+    sessionStorage.setItem("user", serialized);
     sessionStorage.setItem("token", token);
+    localStorage.setItem("user", serialized);
+    localStorage.setItem("token", token);
   };
 
   const handleLogout = () => {
     setUser(null);
     sessionStorage.removeItem("user");
     sessionStorage.removeItem("token");
+    localStorage.removeItem("user");
+    localStorage.removeItem("token");
   };
 
   if (loading) {
@@ -47,7 +62,7 @@ function App() {
     <Router>
       <div className="min-h-screen bg-discord-darkest">
         <Routes>
-          {/* ✅ 루트('/')에 바로 로그인 페이지 연결 */}
+          {/* 루트('/')는 로그인으로 리다이렉트 */}
           <Route path="/" element={<Navigate to="/login" />} />
 
           <Route
@@ -56,6 +71,7 @@ function App() {
               user ? <Navigate to="/home" /> : <Login onLogin={handleLogin} />
             }
           />
+
           <Route
             path="/home"
             element={
@@ -66,19 +82,21 @@ function App() {
               )
             }
           />
-          {/* 🔥 서버 페이지 (새로 추가됨!) */}
+
           <Route
             path="/servers/:serverId"
             element={
               user ? <ServerPage user={user} /> : <Navigate to="/login" />
             }
           />
+
+          {/* 🔥 DM 페이지 - 이제 새 창에서도 user가 채워지므로 통과됨 */}
           <Route
-            path="/chat/:roomId"
-            element={user ? <Chat user={user} /> : <Navigate to="/login" />}
+            path="/dm/:dmId"
+            element={user ? <DirectMessage /> : <Navigate to="/login" />}
           />
 
-          {/* ✅ 잘못된 경로는 로그인으로 */}
+          {/* 나머지는 로그인으로 */}
           <Route path="*" element={<Navigate to="/login" />} />
         </Routes>
       </div>

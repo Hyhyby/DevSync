@@ -7,6 +7,7 @@ import ServerHeader from "../ui/ServerHeader";
 import ServerChannels from "../ui/ServerChannels";
 import ServerMembers from "../ui/ServerMembers";
 import ServerChat from "./ServerChat";
+import ServerInviteModal from "./ServerInviteModal"; // ✅ 초대 모달
 import { API_BASE } from "../../config";
 
 const STORAGE_KEY = "devsync_servers";
@@ -31,19 +32,19 @@ const ServerPage = () => {
   const [textChannels, setTextChannels] = useState(DEFAULT_TEXT_CHANNELS);
   const [voiceChannels, setVoiceChannels] = useState(DEFAULT_VOICE_CHANNELS);
 
+  // ✅ 서버 멤버 목록
+  const [members, setMembers] = useState([]);
+
   // ✅ 어떤 채널이 선택되었는지
   const [activeChannel, setActiveChannel] = useState(null);
 
-  const currentUser = getCurrentUser();
+  // ✅ 서버 초대 모달 열림 상태
+  const [showInviteModal, setShowInviteModal] = useState(false);
+
+  const [currentUser] = useState(() => getCurrentUser());
+
   const displayName =
     currentUser?.username || currentUser?.name || currentUser?.id || "나";
-
-  const members = [
-    {
-      id: currentUser?.id ?? "me",
-      name: displayName,
-    },
-  ];
 
   // 🔹 토큰 + axios 인스턴스
   const token =
@@ -62,7 +63,7 @@ const ServerPage = () => {
     [token]
   );
 
-  // 🔹 serverId가 바뀔 때마다 서버 정보 불러오기
+  // 🔹 serverId가 바뀔 때마다 서버 정보 + 멤버 목록 불러오기
   useEffect(() => {
     const fetchData = async () => {
       // 로그인 안 된 경우: 백엔드 못 쓰니까 로컬 스토리지에서만 시도
@@ -81,6 +82,19 @@ const ServerPage = () => {
           setServer(null);
         }
 
+        // 로컬 모드에서는 일단 나 자신만 멤버로 표시
+        setMembers(
+          currentUser
+            ? [
+                {
+                  id: currentUser.id ?? "me",
+                  name: displayName,
+                  role: "owner",
+                },
+              ]
+            : []
+        );
+
         setTextChannels(DEFAULT_TEXT_CHANNELS);
         setVoiceChannels(DEFAULT_VOICE_CHANNELS);
         setActiveChannel(null); // 처음엔 채널 선택 X
@@ -89,8 +103,14 @@ const ServerPage = () => {
 
       // 로그인 된 경우: 백엔드 우선
       try {
-        const res = await api.get(`/api/servers/${serverId}`);
-        setServer(res.data);
+        // 서버 정보 + 멤버 목록을 동시에 가져오기
+        const [serverRes, membersRes] = await Promise.all([
+          api.get(`/api/servers/${serverId}`),
+          api.get(`/api/servers/${serverId}/members`),
+        ]);
+
+        setServer(serverRes.data);
+        setMembers(Array.isArray(membersRes.data) ? membersRes.data : []);
 
         // 채널은 아직 더미 데이터 사용
         setTextChannels(DEFAULT_TEXT_CHANNELS);
@@ -107,14 +127,29 @@ const ServerPage = () => {
           const saved = localStorage.getItem(STORAGE_KEY);
           if (!saved) {
             setServer(null);
+            setMembers([]);
           } else {
             const list = JSON.parse(saved);
             const found = list.find((s) => String(s.id) === String(serverId));
             setServer(found || null);
+
+            // 로컬 저장된 서버만 있을 때는 나 자신만 멤버로
+            setMembers(
+              currentUser
+                ? [
+                    {
+                      id: currentUser.id ?? "me",
+                      name: displayName,
+                      role: "owner",
+                    },
+                  ]
+                : []
+            );
           }
         } catch (e) {
           console.error("[ServerPage] 로컬 서버 로드 실패:", e);
           setServer(null);
+          setMembers([]);
         }
 
         setTextChannels(DEFAULT_TEXT_CHANNELS);
@@ -124,6 +159,26 @@ const ServerPage = () => {
     };
 
     fetchData();
+  }, [api, serverId, token, currentUser, displayName]);
+
+  // ✅ 서버 멤버 변경 이벤트(server-members-updated) 수신 → 멤버 목록만 새로고침
+  useEffect(() => {
+    if (!token) return;
+
+    const handler = async () => {
+      try {
+        const res = await api.get(`/api/servers/${serverId}/members`);
+        setMembers(Array.isArray(res.data) ? res.data : []);
+      } catch (err) {
+        console.error(
+          "[ServerPage] 멤버 목록 새로고침 실패:",
+          err?.response?.data || err?.message
+        );
+      }
+    };
+
+    window.addEventListener("server-members-updated", handler);
+    return () => window.removeEventListener("server-members-updated", handler);
   }, [api, serverId, token]);
 
   const handleBackHome = () => {
@@ -159,7 +214,7 @@ const ServerPage = () => {
       />
 
       {/* 🔹 본문 */}
-      <div className="flex flex-1">
+      <div className="flex flex-1 min-h-0 overflow-hidden">
         {/* 왼쪽: 채널 리스트 */}
         <ServerChannels
           textChannels={textChannels}
@@ -196,9 +251,20 @@ const ServerPage = () => {
           </main>
         )}
 
-        {/* 오른쪽: 멤버 리스트 */}
-        <ServerMembers members={members} />
+        {/* 오른쪽: 멤버 리스트 (+ 서버 초대 버튼) */}
+        <ServerMembers
+          members={members}
+          onInviteClick={() => setShowInviteModal(true)}
+        />
       </div>
+
+      {/* 서버 초대 모달 */}
+      <ServerInviteModal
+        open={showInviteModal}
+        onClose={() => setShowInviteModal(false)}
+        serverId={serverId}
+        api={api}
+      />
     </div>
   );
 };

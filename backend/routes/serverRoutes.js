@@ -128,6 +128,63 @@ router.get("/:serverId", authenticateToken, async (req, res) => {
 });
 
 /**
+ * 📌 서버 멤버 목록
+ * GET /api/servers/:serverId/members
+ */
+router.get("/:serverId/members", authenticateToken, async (req, res) => {
+  const serverId = req.params.serverId;
+  const userId = req.user.userId;
+
+  try {
+    // 먼저 요청한 유저가 이 서버의 멤버인지 확인
+    const check = await pool.query(
+      `
+      SELECT 1
+      FROM server_members
+      WHERE server_id = $1 AND user_id = $2
+      `,
+      [serverId, userId]
+    );
+
+    if (check.rowCount === 0) {
+      return res
+        .status(403)
+        .json({ error: "이 서버의 멤버가 아니라 멤버 목록을 볼 수 없습니다." });
+    }
+
+    // 실제 멤버 목록
+    const result = await pool.query(
+      `
+      SELECT 
+        u.id,
+        u.username AS name,
+        sm.role,
+        sm.joined_at
+      FROM server_members sm
+      JOIN users u ON u.id = sm.user_id
+      WHERE sm.server_id = $1
+      ORDER BY 
+        CASE WHEN sm.role = 'owner' THEN 0 ELSE 1 END,
+        u.username ASC
+      `,
+      [serverId]
+    );
+
+    const members = result.rows.map((row) => ({
+      id: row.id,
+      name: row.name,
+      role: row.role,
+      joinedAt: row.joined_at,
+    }));
+
+    return res.json(members);
+  } catch (err) {
+    log.error?.("SERVER_MEMBERS_ERR", err);
+    return res.status(500).json({ error: "Failed to load server members" });
+  }
+});
+
+/**
  * 📌 서버 수정 (owner만 가능)
  * PATCH /api/servers/:serverId
  */

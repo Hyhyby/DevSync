@@ -1,6 +1,6 @@
 // src/components/Server/Servers.jsx
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState, useCallback } from "react";
 import axios from "axios";
 import { API_BASE } from "../../config";
 import ServersList from "../ui/ServersList";
@@ -49,57 +49,71 @@ const ServersBar = ({ onSelectServer, variant = "footer" }) => {
     [token]
   );
 
-  // ----- 서버 목록 불러오기 -----
-  useEffect(() => {
-    const fetchServers = async () => {
-      // 로그인 안 된 경우: 그냥 로컬/더미 사용
-      if (!token) {
-        try {
-          const saved = localStorage.getItem(STORAGE_KEY);
-          if (saved) {
-            setServers(JSON.parse(saved));
-          } else {
-            setServers(DEFAULT_SERVERS);
-          }
-        } catch {
-          setServers(DEFAULT_SERVERS);
-        } finally {
-          setLoading(false);
-        }
-        return;
-      }
-
+  // ----- 서버 목록 불러오는 함수 (재사용 가능하도록 분리) -----
+  const fetchServers = useCallback(async () => {
+    // 로그인 안 된 경우: 그냥 로컬/더미 사용
+    if (!token) {
       try {
-        const res = await api.get("/api/servers");
-        const list = Array.isArray(res.data) ? res.data : [];
-
-        const mapped = list.map((s) => ({
-          ...s,
-          short: s.iconUrl || s.name?.trim()?.charAt(0)?.toUpperCase() || "?",
-        }));
-
-        setServers(mapped);
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(mapped));
-      } catch (err) {
-        console.error(
-          "[Servers] GET /api/servers 실패:",
-          err?.response?.data || err?.message
-        );
-
-        // 실패하면 로컬/기본 서버로 폴백
-        try {
-          const saved = localStorage.getItem(STORAGE_KEY);
-          setServers(saved ? JSON.parse(saved) : DEFAULT_SERVERS);
-        } catch {
+        const saved = localStorage.getItem(STORAGE_KEY);
+        if (saved) {
+          setServers(JSON.parse(saved));
+        } else {
           setServers(DEFAULT_SERVERS);
         }
+      } catch {
+        setServers(DEFAULT_SERVERS);
       } finally {
         setLoading(false);
       }
+      return;
+    }
+
+    try {
+      const res = await api.get("/api/servers");
+      const list = Array.isArray(res.data) ? res.data : [];
+
+      const mapped = list.map((s) => ({
+        ...s,
+        short: s.iconUrl || s.name?.trim()?.charAt(0)?.toUpperCase() || "?",
+      }));
+
+      setServers(mapped);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(mapped));
+    } catch (err) {
+      console.error(
+        "[Servers] GET /api/servers 실패:",
+        err?.response?.data || err?.message
+      );
+
+      // 실패하면 로컬/기본 서버로 폴백
+      try {
+        const saved = localStorage.getItem(STORAGE_KEY);
+        setServers(saved ? JSON.parse(saved) : DEFAULT_SERVERS);
+      } catch {
+        setServers(DEFAULT_SERVERS);
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, [api, token]);
+
+  // ----- 처음 마운트될 때 서버 목록 불러오기 -----
+  useEffect(() => {
+    fetchServers();
+  }, [fetchServers]);
+
+  // ✅ 서버 멤버 변경 이벤트(server-members-updated) 수신 → 다시 목록 불러오기
+  useEffect(() => {
+    const handler = () => {
+      console.log(
+        "[Servers] server-members-updated 이벤트 수신 → 목록 새로고침"
+      );
+      fetchServers();
     };
 
-    fetchServers();
-  }, [api, token]);
+    window.addEventListener("server-members-updated", handler);
+    return () => window.removeEventListener("server-members-updated", handler);
+  }, [fetchServers]);
 
   // ----- 서버 생성 (+ 버튼, 백엔드 연동) -----
   const handleCreateServer = async (e) => {

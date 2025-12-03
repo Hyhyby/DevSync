@@ -16,7 +16,8 @@ const ServerChat = ({ user, roomId, roomName }) => {
 
   // 소켓 연결
   useEffect(() => {
-    const token = sessionStorage.getItem("token");
+    const token =
+      sessionStorage.getItem("token") || localStorage.getItem("token");
 
     const socket = io(API_BASE, {
       transports: ["websocket"],
@@ -28,13 +29,22 @@ const ServerChat = ({ user, roomId, roomName }) => {
 
     const handleConnect = () => {
       socket.emit("join-room", {
-        roomId, // 지금은 서버/채널 id를 roomId로 사용
+        roomId,
         username: user?.username || "Unknown",
       });
     };
 
     const handleReceive = (msg) => {
-      setMessages((prev) => [...prev, msg]);
+      // 내 메시지는 중복 추가 방지
+      setMessages((prev) => {
+        const exists = prev.some(
+          (m) =>
+            m.id === msg.id ||
+            (m.username === msg.username && m.message === msg.message)
+        );
+        if (exists) return prev;
+        return [...prev, msg];
+      });
     };
 
     const handleError = (err) => {
@@ -69,13 +79,13 @@ const ServerChat = ({ user, roomId, roomName }) => {
     }
   }, [messages, isAtBottom]);
 
-  // 방/채널 바뀔 때는 바로 맨 아래로
+  // 방/채널 바뀔 때는 바로 맨 아래로 + 이전 메시지 초기화
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({
       behavior: "instant",
       block: "end",
     });
-    setMessages([]); // 채널 변경 시 이전 채팅 비우고 싶으면 유지
+    setMessages([]);
   }, [roomId]);
 
   // 메시지 전송
@@ -95,34 +105,17 @@ const ServerChat = ({ user, roomId, roomName }) => {
       message: text,
       userId: user?.id || "unknown",
       username: user?.username || "Unknown",
+      id: Date.now(), // 임시 ID, 서버에서 다시 부여 가능
+      timestamp: new Date().toISOString(),
     };
 
     socket.emit("send-message", messageData);
-
-    setMessages((prev) => [
-      ...prev,
-      {
-        ...messageData,
-        id: Date.now(),
-        timestamp: new Date().toISOString(),
-      },
-    ]);
-
     setInput("");
   };
 
   return (
-    <div className="flex-1 flex flex-col bg-[#050608]">
-      {/* 상단 채널 이름 부분은 ServerPage에서 이미 있으니까 여기선 생략해도 되고,
-          필요하면 아래 주석 풀어서 쓸 수도 있음 */}
-      {/* 
-      <header className="h-12 border-b border-neutral-900 px-4 flex items-center">
-        <span className="text-lg mr-2 text-gray-400">#</span>
-        <span className="font-semibold text-sm">{roomName}</span>
-      </header>
-      */}
-
-      {/* 메시지 영역 */}
+    <div className="flex-1 flex flex-col bg-[#050608] min-h-0">
+      {/* 메시지 영역 (여기가 스크롤 생기는 부분) */}
       <div
         ref={messagesWrapRef}
         className="flex-1 overflow-y-auto p-4 space-y-4"
@@ -170,6 +163,8 @@ const ServerChat = ({ user, roomId, roomName }) => {
             </div>
           );
         })}
+
+        {/* 스크롤 끝 기준점 */}
         <div ref={messagesEndRef} />
       </div>
 
