@@ -205,57 +205,63 @@ const ServerPage = () => {
   const activeRoomName = activeChannel?.name || `${serverName} · 채널 미선택`;
 
   return (
-    <div className="min-h-screen bg-black text-gray-100 flex flex-col">
-      {/* 🔹 상단 헤더 */}
+    <div className="h-screen bg-black text-gray-100 flex flex-col overflow-hidden">
+      {/* 상단 헤더 */}
       <ServerHeader
         serverName={serverName}
         onBackHome={handleBackHome}
         onSelectServer={handleSelectServer}
       />
 
-      {/* 🔹 본문 */}
+      {/* 본문 3칼럼 레이아웃 */}
       <div className="flex flex-1 min-h-0 overflow-hidden">
-        {/* 왼쪽: 채널 리스트 */}
-        <ServerChannels
-          textChannels={textChannels}
-          voiceChannels={voiceChannels}
-          activeChannelId={activeChannel?.id}
-          onSelectChannel={handleSelectChannel}
-        />
-
-        {/* 가운데: 채팅 영역 (채널 선택 전/후 분기) */}
-        {activeChannel ? (
-          <ServerChat
-            user={currentUser}
-            roomId={activeRoomId}
-            roomName={activeRoomName}
+        {/* 🔹 왼쪽 채널 영역 (자체 스크롤) */}
+        <div className="w-64 flex-shrink-0 border-r border-neutral-900 flex flex-col min-h-0">
+          <ServerChannels
+            textChannels={textChannels}
+            voiceChannels={voiceChannels}
+            activeChannelId={activeChannel?.id}
+            onSelectChannel={handleSelectChannel}
           />
-        ) : (
-          <main className="flex-1 flex flex-col bg-[#050608]">
-            <header className="h-12 border-b border-neutral-900 px-4 flex items-center">
-              <span className="text-lg mr-2 text-gray-400">#</span>
-              <span className="font-semibold text-sm">
-                채팅 채널을 선택해주세요
-              </span>
-            </header>
+        </div>
 
-            <section className="flex-1 p-6 flex flex-col items-center justify-center text-center">
-              <p className="text-sm text-gray-400 mb-2">
-                아직 채널을 선택하지 않았어요.
-              </p>
-              <p className="text-xs text-gray-500">
-                왼쪽의 <span className="text-yellow-300">일반</span> 채널을
-                클릭하면, 여기에서 실시간 채팅이 표시됩니다.
-              </p>
-            </section>
-          </main>
-        )}
+        {/* 🔹 가운데 채팅 영역 (여기만 스크롤) */}
+        <div className="flex-1 flex flex-col min-h-0">
+          {activeChannel ? (
+            <ServerChat
+              user={currentUser}
+              roomId={activeRoomId}
+              roomName={activeRoomName}
+            />
+          ) : (
+            <main className="flex-1 flex flex-col bg-[#050608]">
+              <header className="h-12 border-b border-neutral-900 px-4 flex items-center">
+                <span className="text-lg mr-2 text-gray-400">#</span>
+                <span className="font-semibold text-sm">
+                  채팅 채널을 선택해주세요
+                </span>
+              </header>
 
-        {/* 오른쪽: 멤버 리스트 (+ 서버 초대 버튼) */}
-        <ServerMembers
-          members={members}
-          onInviteClick={() => setShowInviteModal(true)}
-        />
+              <section className="flex-1 p-6 flex flex-col items-center justify-center text-center">
+                <p className="text-sm text-gray-400 mb-2">
+                  아직 채널을 선택하지 않았어요.
+                </p>
+                <p className="text-xs text-gray-500">
+                  왼쪽의 <span className="text-yellow-300">일반</span> 채널을
+                  클릭하면, 여기에서 실시간 채팅이 표시됩니다.
+                </p>
+              </section>
+            </main>
+          )}
+        </div>
+
+        {/* 🔹 오른쪽 멤버 영역 (자체 스크롤) */}
+        <div className="w-64 flex-shrink-0 border-l border-neutral-900 flex flex-col min-h-0">
+          <ServerMembers
+            members={members}
+            onInviteClick={() => setShowInviteModal(true)}
+          />
+        </div>
       </div>
 
       {/* 서버 초대 모달 */}
