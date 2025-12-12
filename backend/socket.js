@@ -16,7 +16,7 @@ let ioInstance = null;
 
 // ✅ 현재 온라인인 유저 맵: userId -> Set<socketId>
 const onlineUsers = new Map();
-
+const voiceMembers = new Map();
 /**
  * Socket.IO 초기화
  */
@@ -233,6 +233,16 @@ function initSocket(server) {
   });
 
   return io;
+}
+function emitVoiceMembers(io, channelId) {
+  const membersMap = voiceMembers.get(channelId);
+  const members = membersMap ? Array.from(membersMap.values()) : [];
+
+  // 이 채널에 참여한 소켓(room)에만 브로드캐스트
+  io.to(`voice:${channelId}`).emit("voice-members", {
+    channelId,
+    members, // [{ userId, username }]
+  });
 }
 
 /**

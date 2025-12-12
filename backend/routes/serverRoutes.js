@@ -5,6 +5,7 @@
 const express = require("express");
 const router = express.Router();
 const pool = require("../config/db");
+const { v4: uuidv4 } = require("uuid");
 const { authenticateToken } = require("../middleware/auth");
 const { log } = require("../middleware/logger");
 
@@ -271,6 +272,44 @@ router.delete("/:serverId", authenticateToken, async (req, res) => {
   } catch (err) {
     log.error?.("SERVER_DELETE_ERR", err);
     return res.status(500).json({ error: "Failed to delete server" });
+  }
+});
+router.post("/", authenticateToken, async (req, res) => {
+  const userId = req.user.userId;
+  const { name, iconUrl } = req.body;
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    const serverId = uuidv4();
+    const serverRes = await client.query(
+      `
+      INSERT INTO servers (id, name, owner_id, icon_url)
+      VALUES ($1, $2, $3, $4)
+      RETURNING id, name, owner_id, icon_url, created_at
+      `,
+      [serverId, name, userId, iconUrl || null]
+    );
+
+    await client.query(
+      `
+  INSERT INTO server_channels (server_id, name, type, position, topic)
+  VALUES 
+    ($1, '일반', 'text', 0, ''),
+    ($1, '일반 음성 채널', 'voice', 0, '')
+`,
+      [serverId]
+    );
+
+    await client.query("COMMIT");
+    res.status(201).json(serverRes.rows[0]);
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error("SERVER_CREATE_ERR", err);
+    res.status(500).json({ error: "Failed to create server" });
+  } finally {
+    client.release();
   }
 });
 
