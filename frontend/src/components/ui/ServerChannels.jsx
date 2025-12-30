@@ -1,10 +1,14 @@
 // src/components/ui/ServerChannels.jsx
-import React, { useState } from "react"; // ✅ useState 추가
+import React, { useState } from "react";
 
 const ServerChannels = ({
   textChannels,
   voiceChannels,
-  activeChannelId,
+  activeTextChannelId,
+  activeVoiceChannelId,
+  voiceMembersByChannel,
+  currentUserId,
+  onLeaveVoice,
   onSelectChannel,
   onDeleteChannel,
   onOpenCreateText,
@@ -15,7 +19,7 @@ const ServerChannels = ({
 
   const handleContextMenu = (e, channel) => {
     e.preventDefault();
-    e.stopPropagation(); // ✅ 바깥 클릭으로 바로 닫히는 것 방지
+    e.stopPropagation();
     setContextMenu({
       x: e.clientX,
       y: e.clientY,
@@ -23,14 +27,12 @@ const ServerChannels = ({
     });
   };
 
-  const closeContextMenu = () => {
-    setContextMenu(null);
-  };
+  const closeContextMenu = () => setContextMenu(null);
 
   return (
     <div
       className="flex flex-col h-full bg-[#111318] text-sm text-gray-200"
-      onClick={closeContextMenu} // ✅ 아무 데나 클릭하면 닫힘
+      onClick={closeContextMenu}
     >
       {/* 🔹 텍스트 채널 헤더 */}
       <div className="flex items-center justify-between px-3 py-2 text-xs text-gray-400">
@@ -55,7 +57,7 @@ const ServerChannels = ({
           </div>
         ) : (
           textChannels.map((ch) => {
-            const isActive = String(ch.id) === String(activeChannelId);
+            const isActive = String(ch.id) === String(activeTextChannelId);
             return (
               <button
                 key={ch.id}
@@ -105,25 +107,74 @@ const ServerChannels = ({
           </div>
         ) : (
           voiceChannels.map((ch) => {
-            const isActive = String(ch.id) === String(activeChannelId);
+            const isActive = String(ch.id) === String(activeVoiceChannelId);
+            const voiceMembers = voiceMembersByChannel?.[String(ch.id)] || [];
+
             return (
-              <button
-                key={ch.id}
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onSelectChannel(ch);
-                }}
-                onContextMenu={(e) => handleContextMenu(e, ch)} // ✅ 음성도 우클릭 가능
-                className={`w-full flex items-center gap-2 px-3 py-1.5 rounded-md text-left text-xs ${
-                  isActive
-                    ? "bg-neutral-800 text-white"
-                    : "text-gray-300 hover:bg-neutral-800/60"
-                }`}
-              >
-                <span className="text-base text-gray-400">🔊</span>
-                <span className="truncate">{ch.name}</span>
-              </button>
+              <div key={ch.id}>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onSelectChannel(ch);
+                  }}
+                  onContextMenu={(e) => handleContextMenu(e, ch)}
+                  className={`w-full flex items-center gap-2 px-3 py-1.5 rounded-md text-left text-xs ${
+                    isActive
+                      ? "bg-neutral-800 text-white"
+                      : "text-gray-300 hover:bg-neutral-800/60"
+                  }`}
+                >
+                  <span className="text-base text-gray-400">🔊</span>
+                  <span className="truncate">{ch.name}</span>
+                </button>
+
+                {/* ✅ 디코처럼: 활성 음성 채널 아래에 참여자 목록 */}
+                {isActive && (
+                  <div className="ml-8 mt-1 space-y-1">
+                    {voiceMembers.length === 0 ? (
+                      <div className="text-[11px] text-gray-500 px-2 py-1">
+                        (참여자 없음)
+                      </div>
+                    ) : (
+                      voiceMembers.map((m) => {
+                        const isMe = String(m.userId) === String(currentUserId);
+
+                        return (
+                          <div
+                            key={m.userId}
+                            className="flex items-center gap-2 px-2 py-1 rounded hover:bg-neutral-800/40"
+                          >
+                            <div className="w-6 h-6 rounded-full bg-[#5865F2] flex items-center justify-center text-[11px] font-semibold text-white">
+                              {(m.username || "?").charAt(0).toUpperCase()}
+                            </div>
+
+                            {/* ✅ 이름 영역을 flex-1로 */}
+                            <div className="flex-1 text-[12px] text-gray-200 truncate">
+                              {m.username}
+                            </div>
+
+                            {/* ✅ 내 이름 오른쪽에 통화 종료(나가기) 버튼 */}
+                            {isMe && (
+                              <button
+                                type="button"
+                                title="음성 채널 나가기"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  onLeaveVoice?.(ch.id);
+                                }}
+                                className="w-7 h-7 flex items-center justify-center rounded-md bg-red-600/90 hover:bg-red-600 text-white text-sm"
+                              >
+                                📞✕
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                )}
+              </div>
             );
           })
         )}
@@ -134,7 +185,7 @@ const ServerChannels = ({
         <div
           className="fixed z-50 bg-neutral-900 border border-neutral-700 rounded shadow-lg text-xs"
           style={{ top: contextMenu.y, left: contextMenu.x }}
-          onClick={(e) => e.stopPropagation()} // ✅ 메뉴 클릭이 바깥 클릭으로 처리되지 않게
+          onClick={(e) => e.stopPropagation()}
         >
           <button
             onClick={() => {
