@@ -1,22 +1,46 @@
 // src/components/ui/ServerChannels.jsx
-import React from "react";
+import React, { useState } from "react"; // ✅ useState 추가
 
 const ServerChannels = ({
   textChannels,
   voiceChannels,
   activeChannelId,
   onSelectChannel,
+  onDeleteChannel,
   onOpenCreateText,
   onOpenCreateVoice,
 }) => {
+  const [contextMenu, setContextMenu] = useState(null);
+  // contextMenu: { x, y, channel }
+
+  const handleContextMenu = (e, channel) => {
+    e.preventDefault();
+    e.stopPropagation(); // ✅ 바깥 클릭으로 바로 닫히는 것 방지
+    setContextMenu({
+      x: e.clientX,
+      y: e.clientY,
+      channel,
+    });
+  };
+
+  const closeContextMenu = () => {
+    setContextMenu(null);
+  };
+
   return (
-    <div className="flex flex-col h-full bg-[#111318] text-sm text-gray-200">
+    <div
+      className="flex flex-col h-full bg-[#111318] text-sm text-gray-200"
+      onClick={closeContextMenu} // ✅ 아무 데나 클릭하면 닫힘
+    >
       {/* 🔹 텍스트 채널 헤더 */}
       <div className="flex items-center justify-between px-3 py-2 text-xs text-gray-400">
         <span className="uppercase tracking-wide">텍스트 채널</span>
         <button
           type="button"
-          onClick={onOpenCreateText}
+          onClick={(e) => {
+            e.stopPropagation();
+            onOpenCreateText();
+          }}
           className="w-5 h-5 flex items-center justify-center rounded-full bg-neutral-700 hover:bg-neutral-600 text-white text-base leading-none"
         >
           +
@@ -36,7 +60,11 @@ const ServerChannels = ({
               <button
                 key={ch.id}
                 type="button"
-                onClick={() => onSelectChannel(ch)}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onSelectChannel(ch);
+                }}
+                onContextMenu={(e) => handleContextMenu(e, ch)}
                 className={`w-full flex items-center gap-2 px-3 py-1.5 rounded-md text-left text-xs ${
                   isActive
                     ? "bg-neutral-800 text-white"
@@ -59,7 +87,10 @@ const ServerChannels = ({
         <span className="uppercase tracking-wide">음성 채널</span>
         <button
           type="button"
-          onClick={onOpenCreateVoice}
+          onClick={(e) => {
+            e.stopPropagation();
+            onOpenCreateVoice();
+          }}
           className="w-5 h-5 flex items-center justify-center rounded-full bg-neutral-700 hover:bg-neutral-600 text-white text-base leading-none"
         >
           +
@@ -79,7 +110,11 @@ const ServerChannels = ({
               <button
                 key={ch.id}
                 type="button"
-                onClick={() => onSelectChannel(ch)}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onSelectChannel(ch);
+                }}
+                onContextMenu={(e) => handleContextMenu(e, ch)} // ✅ 음성도 우클릭 가능
                 className={`w-full flex items-center gap-2 px-3 py-1.5 rounded-md text-left text-xs ${
                   isActive
                     ? "bg-neutral-800 text-white"
@@ -93,6 +128,25 @@ const ServerChannels = ({
           })
         )}
       </div>
+
+      {/* ✅ 컨텍스트 메뉴 */}
+      {contextMenu && (
+        <div
+          className="fixed z-50 bg-neutral-900 border border-neutral-700 rounded shadow-lg text-xs"
+          style={{ top: contextMenu.y, left: contextMenu.x }}
+          onClick={(e) => e.stopPropagation()} // ✅ 메뉴 클릭이 바깥 클릭으로 처리되지 않게
+        >
+          <button
+            onClick={() => {
+              onDeleteChannel?.(contextMenu.channel);
+              closeContextMenu();
+            }}
+            className="block w-full px-4 py-2 text-red-400 hover:bg-neutral-800 text-left"
+          >
+            채널 삭제
+          </button>
+        </div>
+      )}
     </div>
   );
 };

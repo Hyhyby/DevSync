@@ -1,4 +1,4 @@
-const { ALLOWED_ORIGINS } = require('./network');
+const { ALLOWED_ORIGINS } = require("./network");
 
 const NGROK_REGEXES = [
   /^https:\/\/[a-z0-9-]+\.ngrok\.app$/i,
@@ -9,7 +9,7 @@ const NGROK_REGEXES = [
 function isAllowedOrigin(origin) {
   if (!origin) return true;
   if (ALLOWED_ORIGINS.includes(origin)) return true;
-  return NGROK_REGEXES.some(r => r.test(origin));
+  return NGROK_REGEXES.some((r) => r.test(origin));
 }
 
 const corsOptions = {
@@ -18,8 +18,12 @@ const corsOptions = {
     cb(new Error(`Not allowed by CORS: ${origin}`));
   },
   credentials: true,
-  allowedHeaders: ['Content-Type', 'Authorization','ngrok-skip-browser-warning'],
-  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: [
+    "Content-Type",
+    "Authorization",
+    "ngrok-skip-browser-warning",
+  ],
+  methods: ["GET", "POST", "OPTIONS", "PUT", "PATCH", "DELETE", "OPTIONS"],
 };
 
 module.exports = { corsOptions, isAllowedOrigin };

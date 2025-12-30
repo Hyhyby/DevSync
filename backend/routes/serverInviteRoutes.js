@@ -239,6 +239,31 @@ router.post("/invites/accept", authenticateToken, async (req, res) => {
         io.to(sid).emit("server-invite-accepted", payload);
       }
     }
+    try {
+      const io = getIo();
+
+      // 현재 서버 멤버들 (방금 myId도 포함됨)
+      const memberIdsRes = await pool.query(
+        `SELECT user_id FROM server_members WHERE server_id = $1`,
+        [invite.server_id]
+      );
+
+      const payload = {
+        serverId: invite.server_id,
+        joinedUserId: myId,
+      };
+
+      for (const row of memberIdsRes.rows) {
+        const sockets = onlineUsers.get(row.user_id);
+        if (!sockets) continue;
+
+        for (const sid of sockets) {
+          io.to(sid).emit("server-members-updated", payload);
+        }
+      }
+    } catch (e) {
+      console.error("ACCEPT_SERVER_INVITE_SOCKET_ERROR", e);
+    }
   } catch (err) {
     console.error("ACCEPT_SERVER_INVITE_ERROR", err);
     res.status(500).json({ error: "Server error" });

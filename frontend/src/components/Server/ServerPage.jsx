@@ -1,5 +1,6 @@
 // src/components/Server/ServerPage.jsx
-import React, { useEffect, useMemo, useState } from "react";
+import { io } from "socket.io-client";
+import React, { useEffect, useMemo, useState, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import axios from "axios";
 
@@ -27,6 +28,7 @@ const getCurrentUser = () => {
 
 const ServerPage = () => {
   const { serverId } = useParams();
+  const socketRef = useRef(null);
   const navigate = useNavigate();
   const [showCreateChannel, setShowCreateChannel] = useState(false);
   const [createChannelType, setCreateChannelType] = useState("text");
@@ -128,13 +130,14 @@ const ServerPage = () => {
         // 채널이 하나도 선택 안되어 있으면 기본 채널 선택
 
         // 기존에 선택되었던 채널이 목록에 없으면 리셋
-        const stillExists = allChannels.find(
-          (c) => String(c.id) === String(activeChannel.id)
-        );
-        if (!stillExists) {
-          if (texts.length > 0) setActiveChannel(texts[0]);
-          else if (voices.length > 0) setActiveChannel(voices[0]);
-          else setActiveChannel(null);
+        if (activeChannel) {
+          const stillExists = allChannels.some(
+            (c) => String(c.id) === String(activeChannel.id)
+          );
+          if (!stillExists) setActiveChannel(null);
+        } else {
+          // 너는 자동 선택 원치 않으니까 아무것도 안 함
+          setActiveChannel(null);
         }
       } catch (err) {
         console.error(
@@ -181,26 +184,85 @@ const ServerPage = () => {
     // activeChannel은 여기서 내부에서 조건적으로 갱신하니까 dependency에 넣지 않음
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [api, serverId, token, currentUser, displayName]);
-
-  // 🔹 서버 멤버 변경 이벤트(server-members-updated) 수신 → 멤버 목록만 새로고침
+  // 🔹 채널 변경 이벤트(channels-updated) 수신 → 채널 목록 새로고침
   useEffect(() => {
     if (!token) return;
 
-    const handler = async () => {
+    // 소켓 없으면 생성 (이미 있으면 재사용)
+    if (!socketRef.current) {
+      socketRef.current = io(API_BASE, {
+        transports: ["websocket"],
+        auth: { token },
+      });
+    }
+
+    const s = socketRef.current;
+
+    const onChannelsUpdated = async (payload) => {
+      if (String(payload?.serverId) !== String(serverId)) return;
+
+      console.log("[ServerPage] channels-updated 수신 → 채널 갱신", payload);
+
       try {
-        const res = await api.get(`/api/servers/${serverId}/members`);
-        setMembers(Array.isArray(res.data) ? res.data : []);
+        const res = await api.get(`/api/${serverId}/channels`);
+        const all = Array.isArray(res.data) ? res.data : [];
+
+        setTextChannels(all.filter((c) => c.type === "text"));
+        setVoiceChannels(all.filter((c) => c.type === "voice"));
       } catch (err) {
         console.error(
-          "[ServerPage] 멤버 목록 새로고침 실패:",
+          "[ServerPage] 채널 갱신 실패:",
           err?.response?.data || err?.message
         );
       }
     };
 
-    window.addEventListener("server-members-updated", handler);
-    return () => window.removeEventListener("server-members-updated", handler);
-  }, [api, serverId, token]);
+    s.on("channels-updated", onChannelsUpdated);
+
+    return () => {
+      s.off("channels-updated", onChannelsUpdated);
+    };
+  }, [token, serverId, api]);
+
+  // 🔹 서버 멤버 변경 이벤트(server-members-updated) 수신 → 멤버 목록만 새로고침
+  useEffect(() => {
+    if (!token) return;
+
+    // 소켓 없으면 생성
+    if (!socketRef.current) {
+      socketRef.current = io(API_BASE, {
+        transports: ["websocket"],
+        auth: { token },
+      });
+    }
+
+    const s = socketRef.current;
+
+    const onMembersUpdated = async (payload) => {
+      if (String(payload?.serverId) !== String(serverId)) return;
+
+      console.log(
+        "[ServerPage] server-members-updated 수신 → 멤버 갱신",
+        payload
+      );
+
+      try {
+        const res = await api.get(`/api/servers/${serverId}/members`);
+        setMembers(Array.isArray(res.data) ? res.data : []);
+      } catch (err) {
+        console.error(
+          "[ServerPage] 멤버 갱신 실패:",
+          err?.response?.data || err?.message
+        );
+      }
+    };
+
+    s.on("server-members-updated", onMembersUpdated);
+
+    return () => {
+      s.off("server-members-updated", onMembersUpdated);
+    };
+  }, [token, serverId, api]);
 
   const handleBackHome = () => {
     navigate("/home");
@@ -257,14 +319,10 @@ const ServerPage = () => {
       });
       const ch = res.data;
 
-      if (ch.type === "text") {
-        setTextChannels((prev) => [...prev, ch]);
-      } else {
-        setVoiceChannels((prev) => [...prev, ch]);
-      }
+      await fetchChannels();
 
       // 새로 만든 채널로 바로 이동
-      setActiveChannel(ch);
+      setActiveChannel(null);
       setShowCreateChannel(false);
     } catch (err) {
       console.error(
@@ -274,6 +332,56 @@ const ServerPage = () => {
       alert(err?.response?.data?.error || "채널 생성 중 오류가 발생했어요.");
     }
   };
+  const handleDeleteChannel = async (channel) => {
+    if (!window.confirm(`"${channel.name}" 채널을 삭제할까요?`)) return;
+
+    try {
+      await api.delete(`/api/${serverId}/channels/${channel.id}`);
+      await fetchChannels();
+
+      if (activeChannel && String(activeChannel.id) === String(channel.id)) {
+        setActiveChannel(null);
+      }
+    } catch (err) {
+      const status = err?.response?.status;
+      const msg =
+        err?.response?.data?.error ||
+        err?.response?.data?.message ||
+        err?.message ||
+        "채널 삭제 실패";
+
+      console.error(
+        "[ServerPage] 채널 삭제 실패:",
+        status,
+        msg,
+        err?.response?.data
+      );
+
+      alert(`채널 삭제 실패 (${status ?? "?"})\n${msg}`);
+    }
+  };
+  const handleLeaveServer = async () => {
+    if (!token) return;
+
+    if (!window.confirm("정말 이 서버에서 나갈까요?")) return;
+
+    try {
+      await api.post(`/api/servers/${serverId}/leave`);
+
+      // ✅ 홈으로 이동
+      navigate("/home");
+
+      // ✅ 서버 목록 갱신 (Home / Servers.jsx에서 쓰면 좋음)
+      window.dispatchEvent(new Event("servers-updated"));
+    } catch (err) {
+      const msg =
+        err?.response?.data?.error ||
+        err?.message ||
+        "서버 나가기에 실패했어요.";
+      alert(msg);
+    }
+  };
+
   const fetchChannels = async () => {
     try {
       const res = await api.get(`/api/${serverId}/channels`);
@@ -302,6 +410,7 @@ const ServerPage = () => {
         serverName={serverNameForHeader}
         onBackHome={handleBackHome}
         onSelectServer={handleSelectServer}
+        onLeaveServer={handleLeaveServer}
       />
 
       {/* 본문 3칼럼 레이아웃 */}
@@ -313,6 +422,7 @@ const ServerPage = () => {
             voiceChannels={voiceChannels}
             activeChannelId={activeChannel?.id}
             onSelectChannel={handleSelectChannel}
+            onDeleteChannel={handleDeleteChannel}
             onOpenCreateText={handleOpenCreateText}
             onOpenCreateVoice={handleOpenCreateVoice}
           />

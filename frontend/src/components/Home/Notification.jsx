@@ -172,7 +172,19 @@ const Notification = ({ bellIcon, socket: externalSocket }) => {
         "[Notification] server-invite-accepted 이벤트 수신:",
         payload
       );
+
+      // 1) 알림(초대 목록) 새로고침
       fetchServerInvites();
+
+      // 2) ✅ 서버 멤버 목록 갱신 트리거 (초대한 사람 화면에서 ServerPage가 받게 됨)
+      window.dispatchEvent(
+        new CustomEvent("server-members-updated", {
+          detail: { serverId: payload?.serverId },
+        })
+      );
+
+      // (선택) 서버 목록도 갱신하고 싶으면 같이
+      // window.dispatchEvent(new Event("servers-updated"));
     };
 
     const handleServerInviteDeclined = (payload) => {

@@ -2,7 +2,12 @@
 import React from "react";
 import ServersBar from "../Home/Servers";
 
-const ServerHeader = ({ serverName, onBackHome, onSelectServer }) => {
+const ServerHeader = ({
+  serverName,
+  onBackHome,
+  onSelectServer,
+  onLeaveServer,
+}) => {
   return (
     <header className="h-14 px-5 flex items-center justify-between border-b border-neutral-800 bg-gradient-to-r from-black via-neutral-900/80 to-black">
       <div className="flex items-center gap-3">
@@ -26,14 +31,24 @@ const ServerHeader = ({ serverName, onBackHome, onSelectServer }) => {
           </span>
         </div>
 
-        {/* 🔥 서버 간 이동 바 (header용, + 없음) */}
+        {/* 서버 간 이동 바 */}
         <div className="ml-4">
           <ServersBar onSelectServer={onSelectServer} variant="header" />
         </div>
       </div>
 
-      <div className="text-[11px] text-gray-500">
-        서버 채팅 · 채널 · 멤버 관리
+      {/* ✅ 오른쪽 영역: 서버 나가기 + 문구 */}
+      <div className="flex items-center gap-3">
+        <button
+          onClick={onLeaveServer}
+          className="px-3 py-1.5 text-xs rounded bg-red-700/70 hover:bg-red-700 text-white"
+        >
+          서버 나가기
+        </button>
+
+        <div className="text-[11px] text-gray-500">
+          서버 채팅 · 채널 · 멤버 관리
+        </div>
       </div>
     </header>
   );

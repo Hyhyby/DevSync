@@ -1,7 +1,7 @@
 // routes/serverRoutes.js
 // 서버(길드) CRUD + 서버 멤버 관리 API
 // PostgreSQL 기반 / 테이블 구조 100% 반영
-
+const { getIo, onlineUsers } = require("../socket");
 const express = require("express");
 const router = express.Router();
 const pool = require("../config/db");
@@ -274,6 +274,72 @@ router.delete("/:serverId", authenticateToken, async (req, res) => {
     return res.status(500).json({ error: "Failed to delete server" });
   }
 });
+
+/**
+ * 📌 서버 나가기
+ * POST /api/servers/:serverId/leave
+ */
+router.post("/:serverId/leave", authenticateToken, async (req, res) => {
+  const serverId = req.params.serverId;
+  const userId = req.user.userId;
+
+  try {
+    // 1. 서버 존재 여부 및 소유자 확인
+    const serverCheck = await pool.query(
+      `SELECT owner_id FROM servers WHERE id = $1`,
+      [serverId]
+    );
+
+    if (serverCheck.rowCount === 0) {
+      return res.status(404).json({ error: "Server not found" });
+    }
+
+    // 2. 소유자인지 확인 (소유자는 나갈 수 없음)
+    if (serverCheck.rows[0].owner_id === userId) {
+      return res.status(400).json({
+        error:
+          "서버 소유자는 서버를 나갈 수 없습니다. 서버를 삭제하거나 소유권을 양도하세요.",
+      });
+    }
+
+    // 3. 멤버 삭제 (나가기 처리)
+    const result = await pool.query(
+      `DELETE FROM server_members WHERE server_id = $1 AND user_id = $2`,
+      [serverId, userId]
+    );
+
+    // 삭제된 행이 없다면 (= 원래 멤버가 아니었다면)
+    if (result.rowCount === 0) {
+      return res.status(400).json({ error: "이 서버의 멤버가 아닙니다." });
+    }
+    try {
+      const io = getIo();
+
+      // 현재 서버 멤버들 user_id 목록
+      const memberIdsRes = await pool.query(
+        `SELECT user_id FROM server_members WHERE server_id = $1`,
+        [serverId]
+      );
+
+      const payload = { serverId, leftUserId: userId };
+
+      for (const row of memberIdsRes.rows) {
+        const sockets = onlineUsers.get(row.user_id);
+        if (!sockets) continue;
+        for (const sid of sockets) {
+          io.to(sid).emit("server-members-updated", payload);
+        }
+      }
+    } catch (e) {
+      console.error("LEAVE_SERVER_SOCKET_EMIT_ERROR", e);
+    }
+    return res.json({ message: "서버에서 성공적으로 나갔습니다." });
+  } catch (err) {
+    log.error?.("SERVER_LEAVE_ERR", err);
+    return res.status(500).json({ error: "Failed to leave server" });
+  }
+});
+
 router.post("/", authenticateToken, async (req, res) => {
   const userId = req.user.userId;
   const { name, iconUrl } = req.body;

@@ -1,4 +1,5 @@
 // routes/channelRoutes.js
+const { getIo, onlineUsers } = require("../socket");
 const express = require("express");
 const router = express.Router({ mergeParams: true }); // serverId 전달
 const pool = require("../config/db");
@@ -83,6 +84,32 @@ router.post("/", authenticateToken, async (req, res) => {
     );
 
     res.status(201).json(insertRes.rows[0]);
+    // ✅ 채널 생성 후 → 서버 멤버들에게 채널 변경 이벤트 전송
+    try {
+      const io = getIo();
+
+      const memberIdsRes = await pool.query(
+        `SELECT user_id FROM server_members WHERE server_id = $1`,
+        [serverId]
+      );
+
+      const payload = {
+        serverId,
+        channelId: insertRes.rows[0].id,
+        action: "created",
+      };
+
+      for (const row of memberIdsRes.rows) {
+        const sockets = onlineUsers.get(row.user_id);
+        if (!sockets) continue;
+
+        for (const sid of sockets) {
+          io.to(sid).emit("channels-updated", payload);
+        }
+      }
+    } catch (e) {
+      console.error("CHANNEL_CREATE_SOCKET_ERROR", e);
+    }
   } catch (err) {
     log.error?.("CHANNEL_CREATE_ERR", err);
     res.status(500).json({ error: "Failed to create channel" });
@@ -138,6 +165,32 @@ router.patch("/:channelId", authenticateToken, async (req, res) => {
       return res.status(404).json({ error: "Channel not found" });
 
     res.json(result.rows[0]);
+    // ✅ 채널 수정 후 → 서버 멤버들에게 채널 변경 이벤트 전송
+    try {
+      const io = getIo();
+
+      const memberIdsRes = await pool.query(
+        `SELECT user_id FROM server_members WHERE server_id = $1`,
+        [serverId]
+      );
+
+      const payload = {
+        serverId,
+        channelId,
+        action: "updated",
+      };
+
+      for (const row of memberIdsRes.rows) {
+        const sockets = onlineUsers.get(row.user_id);
+        if (!sockets) continue;
+
+        for (const sid of sockets) {
+          io.to(sid).emit("channels-updated", payload);
+        }
+      }
+    } catch (e) {
+      console.error("CHANNEL_UPDATE_SOCKET_ERROR", e);
+    }
   } catch (err) {
     log.error?.("CHANNEL_UPDATE_ERR", err);
     res.status(500).json({ error: "Failed to update channel" });
@@ -161,6 +214,32 @@ router.delete("/:channelId", authenticateToken, async (req, res) => {
       [serverId, channelId]
     );
     res.json({ ok: true });
+    // ✅ 채널 삭제 후 → 서버 멤버들에게 채널 변경 이벤트 전송
+    try {
+      const io = getIo();
+
+      const memberIdsRes = await pool.query(
+        `SELECT user_id FROM server_members WHERE server_id = $1`,
+        [serverId]
+      );
+
+      const payload = {
+        serverId,
+        channelId,
+        action: "deleted",
+      };
+
+      for (const row of memberIdsRes.rows) {
+        const sockets = onlineUsers.get(row.user_id);
+        if (!sockets) continue;
+
+        for (const sid of sockets) {
+          io.to(sid).emit("channels-updated", payload);
+        }
+      }
+    } catch (e) {
+      console.error("CHANNEL_DELETE_SOCKET_ERROR", e);
+    }
   } catch (err) {
     log.error?.("CHANNEL_DELETE_ERR", err);
     res.status(500).json({ error: "Failed to delete channel" });
