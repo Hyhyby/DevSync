@@ -10,6 +10,7 @@ import React, {
 import { useParams, useNavigate } from "react-router-dom";
 import axios from "axios";
 
+import useVoiceChannel from "../VoiceChannel/useVoiceChannel";
 import ServerHeader from "../ui/ServerHeader";
 import ServerChannels from "../ui/ServerChannels";
 import ServerMembers from "../ui/ServerMembers";
@@ -33,13 +34,15 @@ const getCurrentUser = () => {
 const ServerPage = () => {
   const { serverId } = useParams();
   const socketRef = useRef(null);
+  const [socket, setSocket] = useState(null);
   const navigate = useNavigate();
-
+  const leaveVoiceRef = useRef(null);
   const [showCreateChannel, setShowCreateChannel] = useState(false);
   const [createChannelType, setCreateChannelType] = useState("text");
 
   const [server, setServer] = useState(null);
-
+  const { joinVoice, leaveVoice, activeVoiceChannelId, isSpeaking } =
+    useVoiceChannel(socket);
   // 🔹 텍스트 / 음성 채널
   const [textChannels, setTextChannels] = useState([]);
   const [voiceChannels, setVoiceChannels] = useState([]);
@@ -91,6 +94,7 @@ const ServerPage = () => {
     }
 
     const s = socketRef.current;
+    setSocket(s);
 
     const onVoiceMembers = ({ channelId, members }) => {
       setVoiceMembersByChannel((prev) => ({
@@ -105,7 +109,28 @@ const ServerPage = () => {
       s.off("voice-members", onVoiceMembers);
     };
   }, [token]);
+  useEffect(() => {
+    leaveVoiceRef.current = leaveVoice;
+  }, [leaveVoice]);
+  useEffect(() => {
+    return () => {
+      try {
+        // 1) 음성 채널 나가기(WebRTC 정리 포함)
+        leaveVoiceRef.current?.();
 
+        // 2) 소켓 이벤트/연결 정리
+        if (socketRef.current) {
+          socketRef.current.off("voice-members"); // 또는 removeAllListeners()
+          socketRef.current.disconnect();
+          socketRef.current = null;
+        }
+
+        setSocket(null);
+      } catch (e) {
+        console.warn("[ServerPage cleanup] error:", e);
+      }
+    };
+  }, []);
   // 🔹 채널 목록 불러오기 함수
   const fetchChannels = useCallback(async () => {
     try {
@@ -295,24 +320,9 @@ const ServerPage = () => {
       return;
     }
 
-    // ✅ 음성 채널: 가운데 화면 전환 X / 소켓 join만
-    setActiveVoiceChannel((prev) => {
-      const prevId = prev?.id ? String(prev.id) : null;
-      const nextId = String(channel.id);
-
-      const s = socketRef.current;
-
-      if (s && s.connected) {
-        // 디코처럼 "이전 음성 채널" 있으면 leave
-        if (prevId && prevId !== nextId) {
-          s.emit("leave-voice", { channelId: prevId });
-        }
-        // 새 음성 채널 join
-        s.emit("join-voice", { channelId: nextId });
-      }
-
-      return channel;
-    });
+    // ✅ 음성 채널: 훅이 join/시그널링/WebRTC 담당
+    setActiveVoiceChannel(channel); // UI 표시용(왼쪽 활성)
+    joinVoice(String(channel.id)); // ✅ 여기만 호출
   };
 
   const handleOpenCreateText = () => {
@@ -393,11 +403,8 @@ const ServerPage = () => {
     if (!window.confirm("정말 이 서버에서 나갈까요?")) return;
 
     try {
-      // ✅ 음성 채널 들어가 있으면 leave 먼저
-      if (activeVoiceChannel?.id) {
-        socketRef.current?.emit("leave-voice", {
-          channelId: String(activeVoiceChannel.id),
-        });
+      if (activeVoiceChannelId) {
+        leaveVoice();
         setActiveVoiceChannel(null);
       }
 
@@ -439,7 +446,7 @@ const ServerPage = () => {
             voiceChannels={voiceChannels}
             // ✅ active 분리
             activeTextChannelId={activeTextChannel?.id}
-            activeVoiceChannelId={activeVoiceChannel?.id}
+            activeVoiceChannelId={activeVoiceChannelId}
             // ✅ 음성 참여자 목록 전달
             voiceMembersByChannel={voiceMembersByChannel}
             onSelectChannel={handleSelectChannel}
@@ -447,11 +454,9 @@ const ServerPage = () => {
             onOpenCreateText={handleOpenCreateText}
             onOpenCreateVoice={handleOpenCreateVoice}
             currentUserId={currentUserId}
-            onLeaveVoice={(channelId) => {
-              const s = socketRef.current;
-              if (s && s.connected) {
-                s.emit("leave-voice", { channelId: String(channelId) });
-              }
+            isSpeaking={isSpeaking}
+            onLeaveVoice={() => {
+              leaveVoice(); // ✅ 훅이 leave-voice + WebRTC 정리까지
               setActiveVoiceChannel(null);
             }}
           />

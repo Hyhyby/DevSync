@@ -102,7 +102,7 @@ function initSocket(server) {
     );
 
     // =====================================================
-    // ✅ VOICE CHANNEL (디코처럼: 목록만 표시)
+    // ✅ VOICE CHANNEL (멤버목록 + WebRTC 시그널링)
     // =====================================================
     // 디코처럼 "한 번에 하나의 음성 채널"만 들어가게 하기 위한 상태
     socket.currentVoiceChannelId = null;
@@ -112,26 +112,52 @@ function initSocket(server) {
     socket.on("join-voice", ({ channelId }) => {
       if (!channelId) return;
       const cid = String(channelId);
+      const roomName = `voice:${cid}`;
 
       // ✅ 이미 다른 음성 채널에 들어가 있으면 먼저 나가기
       const prev = socket.currentVoiceChannelId;
       if (prev && prev !== cid) {
-        socket.leave(`voice:${prev}`);
+        const prevRoom = `voice:${prev}`;
+
+        socket.leave(prevRoom);
 
         const prevMap = voiceMembers.get(prev);
         if (prevMap) {
           prevMap.delete(socket.id);
           if (prevMap.size === 0) voiceMembers.delete(prev);
         }
+
+        // ✅ (추가) prevRoom 사람들에게 "나감" 알림 (WebRTC 정리용)
+        socket.to(prevRoom).emit("voice:peer-left", {
+          channelId: String(prev),
+          peerId: socket.id,
+        });
+
         emitVoiceMembers(io, prev);
       }
 
       // ✅ 새 채널 입장
       socket.currentVoiceChannelId = cid;
-      socket.join(`voice:${cid}`);
+      socket.join(roomName);
 
       if (!voiceMembers.has(cid)) voiceMembers.set(cid, new Map());
       voiceMembers.get(cid).set(socket.id, { userId, username });
+
+      // ✅ (추가) 현재 room에 있는 peer(socket.id) 목록을 새로 들어온 사람에게 전달
+      const clients = Array.from(io.sockets.adapter.rooms.get(roomName) || []);
+      const peers = clients.filter((id) => id !== socket.id);
+
+      socket.emit("voice:peers", {
+        channelId: cid,
+        peers, // [socketId, socketId...]
+      });
+
+      // ✅ (추가) 기존 사람들에게 새 유저가 들어왔다고 알림(선택)
+      socket.to(roomName).emit("voice:peer-joined", {
+        channelId: cid,
+        peerId: socket.id,
+        user: { userId, username },
+      });
 
       emitVoiceMembers(io, cid);
     });
@@ -142,7 +168,9 @@ function initSocket(server) {
       const cid = String(channelId || socket.currentVoiceChannelId || "");
       if (!cid) return;
 
-      socket.leave(`voice:${cid}`);
+      const roomName = `voice:${cid}`;
+
+      socket.leave(roomName);
 
       const map = voiceMembers.get(cid);
       if (map) {
@@ -154,7 +182,25 @@ function initSocket(server) {
         socket.currentVoiceChannelId = null;
       }
 
+      // ✅ (추가) 같은 채널 사람들에게 "나감" 알림 (WebRTC 정리용)
+      socket.to(roomName).emit("voice:peer-left", {
+        channelId: cid,
+        peerId: socket.id,
+      });
+
       emitVoiceMembers(io, cid);
+    });
+
+    // ✅ WebRTC 시그널링 중계
+    // client: socket.emit("voice:signal", { to, channelId, data })
+    socket.on("voice:signal", ({ to, channelId, data }) => {
+      if (!to || !data) return;
+
+      io.to(to).emit("voice:signal", {
+        from: socket.id,
+        channelId: String(channelId || socket.currentVoiceChannelId || ""),
+        data, // { type: 'offer'|'answer'|'ice', sdp/candidate... }
+      });
     });
 
     // =====================================================
@@ -280,14 +326,22 @@ function initSocket(server) {
         );
       }
 
-      // ✅ (추가) 음성 채널에 들어가 있었으면 자동 퇴장 처리
       const cid = socket.currentVoiceChannelId;
       if (cid) {
+        const roomName = `voice:${cid}`;
+
         const map = voiceMembers.get(cid);
         if (map) {
           map.delete(socket.id);
           if (map.size === 0) voiceMembers.delete(cid);
         }
+
+        // ✅ (추가) 같은 방 사람들에게 나감 알림
+        socket.to(roomName).emit("voice:peer-left", {
+          channelId: String(cid),
+          peerId: socket.id,
+        });
+
         emitVoiceMembers(io, cid);
       }
     });

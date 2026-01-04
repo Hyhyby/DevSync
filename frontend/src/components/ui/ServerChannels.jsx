@@ -1,6 +1,6 @@
 // src/components/ui/ServerChannels.jsx
 import React, { useState } from "react";
-
+import callEndIcon from "../../../assets/call_end.png";
 const ServerChannels = ({
   textChannels,
   voiceChannels,
@@ -13,6 +13,7 @@ const ServerChannels = ({
   onDeleteChannel,
   onOpenCreateText,
   onOpenCreateVoice,
+  isSpeaking,
 }) => {
   const [contextMenu, setContextMenu] = useState(null);
   // contextMenu: { x, y, channel }
@@ -145,7 +146,16 @@ const ServerChannels = ({
                             key={m.userId}
                             className="flex items-center gap-2 px-2 py-1 rounded hover:bg-neutral-800/40"
                           >
-                            <div className="w-6 h-6 rounded-full bg-[#5865F2] flex items-center justify-center text-[11px] font-semibold text-white">
+                            <div
+                              className={`w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-semibold text-white
+    ${
+      isMe && isSpeaking
+        ? "ring-2 ring-green-400 ring-offset-2 ring-offset-[#111318]"
+        : ""
+    }
+    bg-[#5865F2]
+  `}
+                            >
                               {(m.username || "?").charAt(0).toUpperCase()}
                             </div>
 
@@ -163,9 +173,16 @@ const ServerChannels = ({
                                   e.stopPropagation();
                                   onLeaveVoice?.(ch.id);
                                 }}
-                                className="w-7 h-7 flex items-center justify-center rounded-md bg-red-600/90 hover:bg-red-600 text-white text-sm"
+                                className="w-7 h-7 flex items-center justify-center rounded-full
+           bg-neutral-700 hover:bg-neutral-600
+           transition transform hover:scale-105 active:scale-95"
                               >
-                                📞✕
+                                <img
+                                  src={callEndIcon}
+                                  alt="leave voice"
+                                  className="w-4 h-4"
+                                  draggable={false}
+                                />
                               </button>
                             )}
                           </div>
