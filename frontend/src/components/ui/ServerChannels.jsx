@@ -3,6 +3,7 @@ import React, { useState } from "react";
 import callEndIcon from "../../../assets/call_end.png";
 import micOn from "../../../assets/mic_on.png";
 import micOff from "../../../assets/mic_off.png";
+import headsetIcon from "../../../assets/headsetIcon.png";
 const ServerChannels = ({
   textChannels,
   voiceChannels,
@@ -16,6 +17,8 @@ const ServerChannels = ({
   onToggleMic,
   outputVolume,
   onChangeOutputVolume,
+  inputVolume,
+  onChangeInputVolume,
   onLeaveVoice,
   onSelectChannel,
   onDeleteChannel,
@@ -231,38 +234,32 @@ const ServerChannels = ({
       {activeVoiceChannelId && (
         <div className="mt-auto p-3 border-t border-neutral-800 bg-[#0f1115]">
           <div className="flex items-center gap-3">
-            {/* 🎤 마이크 토글 (동그란 버튼) */}
+            {/* 🎤 마이크 토글 */}
             <button
               type="button"
               onClick={(e) => {
                 e.stopPropagation();
                 onToggleMic?.();
               }}
-              title={micMuted ? "마이크 켜기" : "마이크 끄기"}
               className={[
                 "w-12 h-12 rounded-full flex items-center justify-center",
-                "transition-all duration-150 ease-out",
-                "active:scale-95",
+                "transition-all duration-150 ease-out active:scale-95",
                 micMuted
                   ? "bg-red-600 ring-4 ring-red-400/40 animate-pulse"
                   : "bg-neutral-700 hover:bg-neutral-600 ring-1 ring-white/10",
               ].join(" ")}
             >
-              <img
-                src={micMuted ? micOff : micOn}
-                alt={micMuted ? "mic off" : "mic on"}
-                className={[
-                  "w-6 h-6",
-                  "transition-transform duration-200",
-                  micMuted ? "scale-110" : "scale-100",
-                ].join(" ")}
-              />
+              <img src={micMuted ? micOff : micOn} className="w-6 h-6" alt="" />
             </button>
 
-            {/* 🔊 볼륨 컨트롤 */}
-            <div className="flex-1">
+            <div className="flex-1 space-y-3">
+              {/* 🎧 듣는 소리(출력) */}
               <div className="flex items-center gap-2">
-                <span className="text-xs text-gray-400">🔊</span>
+                <img
+                  src={headsetIcon /* 너 아이콘 */}
+                  className="w-4 h-4 opacity-80"
+                  alt=""
+                />
                 <input
                   type="range"
                   min={0}
@@ -275,6 +272,24 @@ const ServerChannels = ({
                 />
                 <span className="w-10 text-right text-[11px] text-gray-400 tabular-nums">
                   {Math.round((outputVolume ?? 0.8) * 100)}%
+                </span>
+              </div>
+
+              {/* 🎙️ 보내는 소리(입력) */}
+              <div className="flex items-center gap-2">
+                <img src={micOn} className="w-4 h-4 opacity-80" alt="" />
+                <input
+                  type="range"
+                  min={0}
+                  max={200} // ✅ 0~200% (2.0)
+                  value={Math.round((inputVolume ?? 1.0) * 100)}
+                  onChange={(e) =>
+                    onChangeInputVolume?.(Number(e.target.value) / 100)
+                  }
+                  className="w-full accent-gray-300"
+                />
+                <span className="w-10 text-right text-[11px] text-gray-400 tabular-nums">
+                  {Math.round((inputVolume ?? 1.0) * 100)}%
                 </span>
               </div>
             </div>

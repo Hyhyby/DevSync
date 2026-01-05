@@ -51,6 +51,8 @@ const ServerPage = () => {
     setMicMuted,
     outputVolume,
     setOutputVolume,
+    inputVolume,
+    setInputVolume,
   } = useVoiceChannel(socket);
   // 🔹 텍스트 / 음성 채널
   const [textChannels, setTextChannels] = useState([]);
@@ -469,6 +471,8 @@ const ServerPage = () => {
             onToggleMic={() => setMicMuted((v) => !v)}
             outputVolume={outputVolume}
             onChangeOutputVolume={(v) => setOutputVolume(v)}
+            inputVolume={inputVolume}
+            onChangeInputVolume={setInputVolume}
             onLeaveVoice={() => {
               leaveVoice(); // ✅ 훅이 leave-voice + WebRTC 정리까지
               setActiveVoiceChannel(null);

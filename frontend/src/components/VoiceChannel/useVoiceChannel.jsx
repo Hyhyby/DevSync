@@ -13,7 +13,7 @@ export default function useVoiceChannel(socket) {
   // ✅ 추가: 마이크 음소거, 출력 볼륨
   const [micMuted, setMicMuted] = useState(false);
   const [outputVolume, setOutputVolume] = useState(0.8); // 0.0 ~ 1.0
-
+  const [inputVolume, setInputVolume] = useState(1.0);
   const localStreamRef = useRef(null);
   const pcsRef = useRef(new Map()); // peerId(socketId) -> RTCPeerConnection
 
@@ -22,6 +22,10 @@ export default function useVoiceChannel(socket) {
   const localVadRafRef = useRef(null);
   const localAnalyserRef = useRef(null);
   const localDataRef = useRef(null);
+  // ✅ 추가: Gain 파이프라인용 ref
+  const outgoingStreamRef = useRef(null); // RTC로 보낼 stream
+  const micGainRef = useRef(null); // GainNode
+  const micDestRef = useRef(null); // MediaStreamDestination
 
   const ensureAudioCtx = useCallback(async () => {
     if (!audioCtxRef.current) {
@@ -52,6 +56,36 @@ export default function useVoiceChannel(socket) {
     localStreamRef.current = stream;
     return stream;
   }, []);
+  // ✅ raw mic -> GainNode -> destination.stream (이 stream을 RTC에 addTrack)
+  const ensureMicPipeline = useCallback(async () => {
+    await ensureMic();
+    await ensureAudioCtx();
+
+    // 이미 만들어져 있으면 그대로 사용
+    if (outgoingStreamRef.current && micGainRef.current && micDestRef.current) {
+      return outgoingStreamRef.current;
+    }
+
+    const ctx = audioCtxRef.current;
+    const raw = localStreamRef.current;
+    if (!ctx || !raw) return null;
+
+    const source = ctx.createMediaStreamSource(raw);
+
+    const gain = ctx.createGain();
+    gain.gain.value = inputVolume; // ✅ 입력 볼륨 적용
+
+    const dest = ctx.createMediaStreamDestination();
+
+    source.connect(gain);
+    gain.connect(dest);
+
+    micGainRef.current = gain;
+    micDestRef.current = dest;
+    outgoingStreamRef.current = dest.stream;
+
+    return outgoingStreamRef.current;
+  }, [ensureMic, ensureAudioCtx, inputVolume]);
 
   const cleanupRemoteAudio = useCallback((peerId) => {
     const el = document.getElementById(`remote-audio-${peerId}`);
@@ -170,6 +204,12 @@ export default function useVoiceChannel(socket) {
     applyMicMuted(micMuted);
   }, [micMuted, applyMicMuted]);
 
+  useEffect(() => {
+    if (micGainRef.current) {
+      micGainRef.current.gain.value = inputVolume;
+    }
+  }, [inputVolume]);
+
   // ✅ outputVolume 바뀔 때 즉시 반영
   useEffect(() => {
     applyOutputVolume(outputVolume);
@@ -231,7 +271,7 @@ export default function useVoiceChannel(socket) {
         iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
       });
 
-      const stream = localStreamRef.current;
+      const stream = outgoingStreamRef.current || localStreamRef.current;
       if (stream) stream.getTracks().forEach((t) => pc.addTrack(t, stream));
 
       pc.onicecandidate = (e) => {
@@ -350,6 +390,7 @@ export default function useVoiceChannel(socket) {
     async (channelId) => {
       if (!socket) return;
       await ensureMic();
+      await ensureMicPipeline();
       applyMicMuted(micMuted);
       await ensureAudioCtx(); // suspended 대비
       await startLocalVAD();
@@ -368,6 +409,9 @@ export default function useVoiceChannel(socket) {
     setActiveVoiceChannelId(null);
     setMicMuted(false);
     stopAll();
+    outgoingStreamRef.current = null;
+    micGainRef.current = null;
+    micDestRef.current = null;
   }, [socket, activeVoiceChannelId, stopAll]);
 
   return {
@@ -382,5 +426,7 @@ export default function useVoiceChannel(socket) {
     setMicMuted,
     outputVolume,
     setOutputVolume,
+    inputVolume,
+    setInputVolume,
   };
 }
