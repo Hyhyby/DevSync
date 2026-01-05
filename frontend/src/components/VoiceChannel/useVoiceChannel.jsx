@@ -3,52 +3,54 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 export default function useVoiceChannel(socket) {
   const [activeVoiceChannelId, setActiveVoiceChannelId] = useState(null);
+
+  // (기존에 isSpeaking 쓰고 있다면 유지하고 싶어서 기본값만 둠)
   const [isSpeaking, setIsSpeaking] = useState(false);
 
+  // ✅ 상대 speaking: peerSocketId -> boolean
+  const [remoteSpeaking, setRemoteSpeaking] = useState({});
+
+  // ✅ 추가: 마이크 음소거, 출력 볼륨
+  const [micMuted, setMicMuted] = useState(false);
+  const [outputVolume, setOutputVolume] = useState(0.8); // 0.0 ~ 1.0
+
   const localStreamRef = useRef(null);
-  const pcsRef = useRef(new Map()); // peerId -> RTCPeerConnection
+  const pcsRef = useRef(new Map()); // peerId(socketId) -> RTCPeerConnection
+
+  const audioCtxRef = useRef(null);
+  const remoteVadRef = useRef(new Map()); // peerId -> { analyser, data, rafId }
+  const localVadRafRef = useRef(null);
+  const localAnalyserRef = useRef(null);
+  const localDataRef = useRef(null);
+
+  const ensureAudioCtx = useCallback(async () => {
+    if (!audioCtxRef.current) {
+      audioCtxRef.current = new (window.AudioContext ||
+        window.webkitAudioContext)();
+    }
+    // 웹 정책 때문에 suspended일 수 있음
+    if (audioCtxRef.current.state === "suspended") {
+      try {
+        await audioCtxRef.current.resume();
+      } catch {}
+    }
+    return audioCtxRef.current;
+  }, []);
 
   const ensureMic = useCallback(async () => {
     if (localStreamRef.current) return localStreamRef.current;
+
     const stream = await navigator.mediaDevices.getUserMedia({
-      audio: true,
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      },
       video: false,
     });
+
     localStreamRef.current = stream;
-    startSpeakingDetection();
     return stream;
-  }, []);
-  const analyserRef = useRef(null);
-  const audioContextRef = useRef(null);
-  const startSpeakingDetection = useCallback(() => {
-    if (!localStreamRef.current) return;
-
-    const AudioContext = window.AudioContext || window.webkitAudioContext;
-    const audioContext = new AudioContext();
-    audioContextRef.current = audioContext;
-
-    const analyser = audioContext.createAnalyser();
-    analyser.fftSize = 512;
-    analyserRef.current = analyser;
-
-    const source = audioContext.createMediaStreamSource(localStreamRef.current);
-    source.connect(analyser);
-
-    const data = new Uint8Array(analyser.frequencyBinCount);
-
-    const checkVolume = () => {
-      analyser.getByteFrequencyData(data);
-
-      // 평균 볼륨 계산
-      const avg = data.reduce((sum, v) => sum + v, 0) / data.length;
-
-      // 🔥 임계값 (환경 따라 조절)
-      setIsSpeaking(avg > 20);
-
-      requestAnimationFrame(checkVolume);
-    };
-
-    checkVolume();
   }, []);
 
   const cleanupRemoteAudio = useCallback((peerId) => {
@@ -56,18 +58,148 @@ export default function useVoiceChannel(socket) {
     if (el) el.remove();
   }, []);
 
+  const stopRemoteVAD = useCallback((peerId) => {
+    const obj = remoteVadRef.current.get(peerId);
+    if (obj?.rafId) cancelAnimationFrame(obj.rafId);
+    remoteVadRef.current.delete(peerId);
+
+    setRemoteSpeaking((prev) => {
+      if (!(peerId in prev)) return prev;
+      const next = { ...prev };
+      delete next[peerId];
+      return next;
+    });
+  }, []);
+
+  const startRemoteVAD = useCallback(
+    async (peerId, remoteStream) => {
+      await ensureAudioCtx();
+      const ctx = audioCtxRef.current;
+      if (!ctx) return;
+
+      // 중복 방지
+      if (remoteVadRef.current.has(peerId)) return;
+
+      const source = ctx.createMediaStreamSource(remoteStream);
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 512;
+
+      source.connect(analyser);
+
+      const data = new Uint8Array(analyser.frequencyBinCount);
+
+      const loop = () => {
+        analyser.getByteTimeDomainData(data);
+
+        // RMS
+        let sum = 0;
+        for (let i = 0; i < data.length; i++) {
+          const v = (data[i] - 128) / 128;
+          sum += v * v;
+        }
+        const rms = Math.sqrt(sum / data.length);
+
+        const speaking = rms > 0.03; // 필요하면 조절
+        setRemoteSpeaking((prev) => {
+          if (prev[peerId] === speaking) return prev;
+          return { ...prev, [peerId]: speaking };
+        });
+
+        const rafId = requestAnimationFrame(loop);
+        remoteVadRef.current.set(peerId, { analyser, data, rafId });
+      };
+
+      loop();
+    },
+    [ensureAudioCtx]
+  );
+
+  const startLocalVAD = useCallback(async () => {
+    await ensureAudioCtx();
+    const ctx = audioCtxRef.current;
+    if (!ctx) return;
+
+    // 이미 돌고 있으면 패스
+    if (localVadRafRef.current) return;
+    if (!localStreamRef.current) return;
+
+    const source = ctx.createMediaStreamSource(localStreamRef.current);
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 512;
+    source.connect(analyser);
+
+    const data = new Uint8Array(analyser.frequencyBinCount);
+
+    localAnalyserRef.current = analyser;
+    localDataRef.current = data;
+
+    const loop = () => {
+      analyser.getByteTimeDomainData(data);
+      let sum = 0;
+      for (let i = 0; i < data.length; i++) {
+        const v = (data[i] - 128) / 128;
+        sum += v * v;
+      }
+      const rms = Math.sqrt(sum / data.length);
+      const speaking = rms > 0.03;
+
+      setIsSpeaking((prev) => (prev === speaking ? prev : speaking));
+
+      localVadRafRef.current = requestAnimationFrame(loop);
+    };
+
+    loop();
+  }, [ensureAudioCtx]);
+  // ✅ 추가: 마이크 트랙 on/off
+  const applyMicMuted = useCallback((muted) => {
+    const stream = localStreamRef.current;
+    if (!stream) return;
+    stream.getAudioTracks().forEach((t) => {
+      t.enabled = !muted;
+    });
+  }, []);
+  // ✅ 추가: 원격 오디오 엘리먼트 볼륨 적용
+  const applyOutputVolume = useCallback((v) => {
+    const vol = Math.max(0, Math.min(1, v));
+    document.querySelectorAll('[id^="remote-audio-"]').forEach((el) => {
+      el.volume = vol;
+    });
+  }, []);
+  // ✅ micMuted 바뀔 때 즉시 반영
+  useEffect(() => {
+    applyMicMuted(micMuted);
+  }, [micMuted, applyMicMuted]);
+
+  // ✅ outputVolume 바뀔 때 즉시 반영
+  useEffect(() => {
+    applyOutputVolume(outputVolume);
+  }, [outputVolume, applyOutputVolume]);
+
+  // createPC의 ontrack에서 remote audio 만들 때도 볼륨 적용되게 한 줄 추가
+  // (너 기존 createPC 안의 pc.ontrack 부분에서 audio 만들고 나서 아래 1줄만 추가)
+  //
+  // audio.volume = outputVolume;
+  const stopLocalVAD = useCallback(() => {
+    if (localVadRafRef.current) cancelAnimationFrame(localVadRafRef.current);
+    localVadRafRef.current = null;
+    localAnalyserRef.current = null;
+    localDataRef.current = null;
+    setIsSpeaking(false);
+  }, []);
+
   const closePeer = useCallback(
     (peerId) => {
       const pc = pcsRef.current.get(peerId);
       if (pc) pc.close();
       pcsRef.current.delete(peerId);
+      stopRemoteVAD(peerId);
       cleanupRemoteAudio(peerId);
     },
-    [cleanupRemoteAudio]
+    [cleanupRemoteAudio, stopRemoteVAD]
   );
 
   const stopAll = useCallback(() => {
-    // 모든 PeerConnection 종료
+    // PeerConnection 종료
     pcsRef.current.forEach((pc) => pc.close());
     pcsRef.current.clear();
 
@@ -76,17 +208,22 @@ export default function useVoiceChannel(socket) {
       .querySelectorAll('[id^="remote-audio-"]')
       .forEach((el) => el.remove());
 
+    // remote VAD 종료
+    remoteVadRef.current.forEach((obj) => {
+      if (obj?.rafId) cancelAnimationFrame(obj.rafId);
+    });
+    remoteVadRef.current.clear();
+    setRemoteSpeaking({});
+
+    // local VAD 종료
+    stopLocalVAD();
+
     // mic 종료
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach((t) => t.stop());
       localStreamRef.current = null;
     }
-    if (audioContextRef.current) {
-      audioContextRef.current.close();
-      audioContextRef.current = null;
-    }
-    setIsSpeaking(false);
-  }, []);
+  }, [stopLocalVAD]);
 
   const createPC = useCallback(
     (peerId, channelId) => {
@@ -116,23 +253,29 @@ export default function useVoiceChannel(socket) {
           audio.id = `remote-audio-${peerId}`;
           audio.autoplay = true;
           audio.playsInline = true;
+          // 필요하면 숨김 처리 가능
+          audio.style.display = "none";
           document.body.appendChild(audio);
         }
         audio.srcObject = remoteStream;
+        audio.volume = outputVolume;
+        // ✅ 상대 말하기 감지 시작
+        startRemoteVAD(peerId, remoteStream);
       };
 
       pcsRef.current.set(peerId, pc);
       return pc;
     },
-    [socket]
+    [socket, startRemoteVAD, outputVolume]
   );
 
-  // ✅ socket 이벤트 핸들러 (훅 내부에서 한번만 등록)
+  // socket 이벤트 핸들러
   useEffect(() => {
     if (!socket) return;
 
     const onPeers = async ({ channelId, peers }) => {
       await ensureMic();
+      await startLocalVAD();
 
       for (const peerId of peers) {
         const pc = createPC(peerId, channelId);
@@ -150,6 +293,7 @@ export default function useVoiceChannel(socket) {
 
     const onSignal = async ({ from, channelId, data }) => {
       await ensureMic();
+      await startLocalVAD();
 
       let pc = pcsRef.current.get(from);
       if (!pc) pc = createPC(from, channelId);
@@ -190,26 +334,21 @@ export default function useVoiceChannel(socket) {
       socket.off("voice:signal", onSignal);
       socket.off("voice:peer-left", onPeerLeft);
     };
-  }, [socket, ensureMic, createPC, closePeer]);
+  }, [socket, ensureMic, createPC, closePeer, startLocalVAD]);
 
-  // ✅ join/leave API를 ServerPage가 호출
+  // join/leave API
   const joinVoice = useCallback(
     async (channelId) => {
       if (!socket) return;
-
-      const next = String(channelId);
-
-      // ✅ 이미 다른 음성 채널에 있었다면 WebRTC 정리 + 서버 leave 먼저
-      if (activeVoiceChannelId && activeVoiceChannelId !== next) {
-        socket.emit("leave-voice", { channelId: activeVoiceChannelId });
-        stopAll();
-      }
-
       await ensureMic();
-      setActiveVoiceChannelId(next);
-      socket.emit("join-voice", { channelId: next });
+      applyMicMuted(micMuted);
+      await ensureAudioCtx(); // suspended 대비
+      await startLocalVAD();
+
+      setActiveVoiceChannelId(String(channelId));
+      socket.emit("join-voice", { channelId: String(channelId) });
     },
-    [socket, ensureMic, activeVoiceChannelId, stopAll]
+    [socket, ensureMic, ensureAudioCtx, startLocalVAD, applyMicMuted, micMuted]
   );
 
   const leaveVoice = useCallback(() => {
@@ -225,8 +364,13 @@ export default function useVoiceChannel(socket) {
     activeVoiceChannelId,
     joinVoice,
     leaveVoice,
-    stopAll, // 필요시
-    localStreamRef, // (나중에 mute 구현할 때 사용)
+    stopAll,
+    localStreamRef,
     isSpeaking,
+    remoteSpeaking, // ✅ 추가
+    micMuted,
+    setMicMuted,
+    outputVolume,
+    setOutputVolume,
   };
 }

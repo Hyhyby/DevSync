@@ -41,8 +41,17 @@ const ServerPage = () => {
   const [createChannelType, setCreateChannelType] = useState("text");
 
   const [server, setServer] = useState(null);
-  const { joinVoice, leaveVoice, activeVoiceChannelId, isSpeaking } =
-    useVoiceChannel(socket);
+  const {
+    joinVoice,
+    leaveVoice,
+    activeVoiceChannelId,
+    isSpeaking,
+    remoteSpeaking,
+    micMuted,
+    setMicMuted,
+    outputVolume,
+    setOutputVolume,
+  } = useVoiceChannel(socket);
   // 🔹 텍스트 / 음성 채널
   const [textChannels, setTextChannels] = useState([]);
   const [voiceChannels, setVoiceChannels] = useState([]);
@@ -455,6 +464,11 @@ const ServerPage = () => {
             onOpenCreateVoice={handleOpenCreateVoice}
             currentUserId={currentUserId}
             isSpeaking={isSpeaking}
+            remoteSpeaking={remoteSpeaking}
+            micMuted={micMuted}
+            onToggleMic={() => setMicMuted((v) => !v)}
+            outputVolume={outputVolume}
+            onChangeOutputVolume={(v) => setOutputVolume(v)}
             onLeaveVoice={() => {
               leaveVoice(); // ✅ 훅이 leave-voice + WebRTC 정리까지
               setActiveVoiceChannel(null);
