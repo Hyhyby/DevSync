@@ -167,7 +167,15 @@ const ServerChannels = ({
                             <div className="flex-1 text-[12px] text-gray-200 truncate">
                               {m.username}
                             </div>
-
+                            {m.micMuted && (
+                              <img
+                                src={micOff}
+                                alt="muted"
+                                title="마이크 꺼짐"
+                                className="w-4 h-4 opacity-80"
+                                draggable={false}
+                              />
+                            )}
                             {isMe && (
                               <button
                                 type="button"
@@ -219,25 +227,26 @@ const ServerChannels = ({
           </button>
         </div>
       )}
-      {/* ✅ 음성 채널 컨트롤: 음성 채널에 들어가 있을 때만 표시 */}
+      {/* ✅ 음성 채널 컨트롤 (하단) */}
       {activeVoiceChannelId && (
         <div className="mt-auto p-3 border-t border-neutral-800 bg-[#0f1115]">
           <div className="flex items-center gap-3">
-            {/* ✅ 마이크 토글 (왼쪽) */}
+            {/* 🎤 마이크 토글 (동그란 버튼) */}
             <button
               type="button"
               onClick={(e) => {
                 e.stopPropagation();
                 onToggleMic?.();
               }}
+              title={micMuted ? "마이크 켜기" : "마이크 끄기"}
               className={[
-                "w-11 h-11 rounded-lg flex items-center justify-center",
-                "transition-all duration-150 ease-out active:scale-[0.98]",
+                "w-12 h-12 rounded-full flex items-center justify-center",
+                "transition-all duration-150 ease-out",
+                "active:scale-95",
                 micMuted
-                  ? "bg-red-600/90 hover:bg-red-600 ring-2 ring-red-400/50 animate-pulse"
+                  ? "bg-red-600 ring-4 ring-red-400/40 animate-pulse"
                   : "bg-neutral-700 hover:bg-neutral-600 ring-1 ring-white/10",
               ].join(" ")}
-              title={micMuted ? "마이크 켜기" : "마이크 끄기"}
             >
               <img
                 src={micMuted ? micOff : micOn}
@@ -250,7 +259,7 @@ const ServerChannels = ({
               />
             </button>
 
-            {/* ✅ 볼륨 (오른쪽, 남은 공간 채움) */}
+            {/* 🔊 볼륨 컨트롤 */}
             <div className="flex-1">
               <div className="flex items-center gap-2">
                 <span className="text-xs text-gray-400">🔊</span>

@@ -1,4 +1,4 @@
-// socket.js (Socket.IO 설정 담당)
+// socket.js
 const { Server } = require("socket.io");
 const pool = require("./config/db");
 const jwt = require("jsonwebtoken");
@@ -17,7 +17,7 @@ let ioInstance = null;
 // ✅ 현재 온라인인 유저 맵: userId -> Set<socketId>
 const onlineUsers = new Map();
 
-// ✅ 음성 채널 멤버: channelId(string) -> Map<socketId, { userId, username }>
+// ✅ 음성 채널 멤버: channelId(string) -> Map<socketId, { socketId, userId, username }>
 const voiceMembers = new Map();
 
 function emitVoiceMembers(io, channelId) {
@@ -25,16 +25,12 @@ function emitVoiceMembers(io, channelId) {
   const membersMap = voiceMembers.get(cid);
   const members = membersMap ? Array.from(membersMap.values()) : [];
 
-  // 이 채널에 참여한 소켓(room)에만 브로드캐스트
   io.to(`voice:${cid}`).emit("voice-members", {
     channelId: cid,
-    members, // [{ userId, username }]
+    members, // [{ socketId, userId, username }]
   });
 }
 
-/**
- * Socket.IO 초기화
- */
 function initSocket(server) {
   const io = new Server(server, {
     cors: {
@@ -47,13 +43,9 @@ function initSocket(server) {
     },
   });
 
-  // 전역 저장
   ioInstance = io;
 
-  /**
-   * 🔐 인증 미들웨어
-   * - 토큰 없거나 검증 실패하면 연결 거부
-   */
+  // 🔐 인증
   io.use((socket, next) => {
     try {
       const token =
@@ -63,7 +55,6 @@ function initSocket(server) {
       if (!token) return next(new Error("NO_TOKEN"));
 
       const user = jwt.verify(token, JWT_SECRET);
-      // user: { userId, username, ... }
       socket.user = user;
       next();
     } catch (err) {
@@ -74,14 +65,9 @@ function initSocket(server) {
   io.on("connection", (socket) => {
     socketLogger(socket);
 
-    // ---------------------------
-    // ✅ 인증 유저 체크
-    // ---------------------------
     const user = socket.user;
     if (!user || !user.userId) {
-      log.warn(
-        `⚠️ CONNECTED WITHOUT USER, socketId=${socket.id}, force disconnect`
-      );
+      log.warn(`⚠️ CONNECTED WITHOUT USER socketId=${socket.id}`);
       socket.disconnect(true);
       return;
     }
@@ -91,35 +77,24 @@ function initSocket(server) {
 
     log.connection("CONNECTED", socket.id, `User: ${username} (${userId})`);
 
-    // ✅ 인증된 유저를 onlineUsers에 등록
+    // onlineUsers
     if (!onlineUsers.has(userId)) onlineUsers.set(userId, new Set());
     onlineUsers.get(userId).add(socket.id);
 
-    log.info(
-      `👤 ONLINE_ADD userId=${userId}, socketId=${socket.id}, totalSockets=${
-        onlineUsers.get(userId).size
-      }`
-    );
-
-    // =====================================================
-    // ✅ VOICE CHANNEL (멤버목록 + WebRTC 시그널링)
-    // =====================================================
-    // 디코처럼 "한 번에 하나의 음성 채널"만 들어가게 하기 위한 상태
+    // =========================
+    // ✅ VOICE
+    // =========================
     socket.currentVoiceChannelId = null;
 
-    // 음성 채널 입장
-    // client: socket.emit("join-voice", { channelId })
     socket.on("join-voice", ({ channelId }) => {
       if (!channelId) return;
       const cid = String(channelId);
-      const roomName = `voice:${cid}`;
 
-      // ✅ 이미 다른 음성 채널에 들어가 있으면 먼저 나가기
+      // 이전 음성 채널 정리
       const prev = socket.currentVoiceChannelId;
       if (prev && prev !== cid) {
-        const prevRoom = `voice:${prev}`;
-
-        socket.leave(prevRoom);
+        // prev room에서 빠지기 + 멤버 정리 + peer-left 브로드캐스트
+        socket.leave(`voice:${prev}`);
 
         const prevMap = voiceMembers.get(prev);
         if (prevMap) {
@@ -127,50 +102,56 @@ function initSocket(server) {
           if (prevMap.size === 0) voiceMembers.delete(prev);
         }
 
-        // ✅ (추가) prevRoom 사람들에게 "나감" 알림 (WebRTC 정리용)
-        socket.to(prevRoom).emit("voice:peer-left", {
-          channelId: String(prev),
-          peerId: socket.id,
-        });
-
+        io.to(`voice:${prev}`).emit("voice:peer-left", { peerId: socket.id });
         emitVoiceMembers(io, prev);
       }
 
-      // ✅ 새 채널 입장
+      // 새 채널 join
       socket.currentVoiceChannelId = cid;
-      socket.join(roomName);
+      socket.join(`voice:${cid}`);
 
       if (!voiceMembers.has(cid)) voiceMembers.set(cid, new Map());
-      voiceMembers.get(cid).set(socket.id, { userId, username });
+      const map = voiceMembers.get(cid);
 
-      // ✅ (추가) 현재 room에 있는 peer(socket.id) 목록을 새로 들어온 사람에게 전달
-      const clients = Array.from(io.sockets.adapter.rooms.get(roomName) || []);
-      const peers = clients.filter((id) => id !== socket.id);
+      // ✅ join 직전, 기존 피어 목록을 joiner에게 전달
+      const peers = Array.from(map.keys()).filter((sid) => sid !== socket.id);
+      socket.emit("voice:peers", { channelId: cid, peers });
 
-      socket.emit("voice:peers", {
-        channelId: cid,
-        peers, // [socketId, socketId...]
-      });
-
-      // ✅ (추가) 기존 사람들에게 새 유저가 들어왔다고 알림(선택)
-      socket.to(roomName).emit("voice:peer-joined", {
-        channelId: cid,
-        peerId: socket.id,
-        user: { userId, username },
+      // ✅ 멤버 등록(이제 socketId 포함)
+      map.set(socket.id, {
+        socketId: socket.id,
+        userId,
+        username,
+        micMuted: false,
       });
 
       emitVoiceMembers(io, cid);
     });
+    // ✅ 마이크 음소거 상태 변경(클라가 보내는 이벤트)
+    socket.on("voice:mic-muted", ({ channelId, micMuted }) => {
+      const cid = String(channelId || socket.currentVoiceChannelId || "");
+      if (!cid) return;
 
-    // 음성 채널 퇴장
-    // client: socket.emit("leave-voice", { channelId })
+      // 같은 채널 안에서만 처리(안전장치)
+      if (String(socket.currentVoiceChannelId || "") !== cid) return;
+
+      const map = voiceMembers.get(cid);
+      if (!map) return;
+
+      const me = map.get(socket.id);
+      if (!me) return;
+
+      map.set(socket.id, { ...me, micMuted: !!micMuted });
+
+      // ✅ 최신 멤버 목록 다시 브로드캐스트 (상대방 UI 갱신)
+      emitVoiceMembers(io, cid);
+    });
+
     socket.on("leave-voice", ({ channelId }) => {
       const cid = String(channelId || socket.currentVoiceChannelId || "");
       if (!cid) return;
 
-      const roomName = `voice:${cid}`;
-
-      socket.leave(roomName);
+      socket.leave(`voice:${cid}`);
 
       const map = voiceMembers.get(cid);
       if (map) {
@@ -182,30 +163,31 @@ function initSocket(server) {
         socket.currentVoiceChannelId = null;
       }
 
-      // ✅ (추가) 같은 채널 사람들에게 "나감" 알림 (WebRTC 정리용)
-      socket.to(roomName).emit("voice:peer-left", {
-        channelId: cid,
-        peerId: socket.id,
-      });
-
+      // ✅ 같은 채널 사람들에게 "이 피어 나감" 알려서 WebRTC 정리
+      io.to(`voice:${cid}`).emit("voice:peer-left", { peerId: socket.id });
       emitVoiceMembers(io, cid);
     });
 
-    // ✅ WebRTC 시그널링 중계
-    // client: socket.emit("voice:signal", { to, channelId, data })
+    // ✅ 시그널링 릴레이
     socket.on("voice:signal", ({ to, channelId, data }) => {
-      if (!to || !data) return;
+      const cid = String(channelId || "");
+      if (!to || !cid || !data) return;
 
-      io.to(to).emit("voice:signal", {
+      // 기본 안전장치: 같은 음성 채널 안에서만 중계
+      if (String(socket.currentVoiceChannelId || "") !== cid) return;
+      const map = voiceMembers.get(cid);
+      if (!map || !map.has(String(to))) return;
+
+      io.to(String(to)).emit("voice:signal", {
         from: socket.id,
-        channelId: String(channelId || socket.currentVoiceChannelId || ""),
-        data, // { type: 'offer'|'answer'|'ice', sdp/candidate... }
+        channelId: cid,
+        data,
       });
     });
 
-    // =====================================================
-    // ✅ DM
-    // =====================================================
+    // =========================
+    // ✅ DM (기존 유지)
+    // =========================
     socket.on("join-dm", (dmId) => {
       if (!dmId) return;
       socket.join(`dm_${dmId}`);
@@ -218,19 +200,16 @@ function initSocket(server) {
         const text = (message || "").trim();
         if (!dmId || !text) return;
 
-        // 1) 내가 이 DM 방의 참가자인지 확인 (보안)
         const auth = await pool.query(
           `
           SELECT 1
           FROM dm_participants
-          WHERE dm_id = $1
-            AND user_id = $2
+          WHERE dm_id = $1 AND user_id = $2
           `,
           [dmId, userId]
         );
         if (auth.rowCount === 0) return;
 
-        // 2) DB에 메시지 저장
         const result = await pool.query(
           `
           INSERT INTO dm_messages (dm_id, user_id, content)
@@ -242,36 +221,30 @@ function initSocket(server) {
 
         const msgRow = result.rows[0];
 
-        // 3) DM 마지막 활동시간 업데이트 (목록 정렬용)
         await pool.query(
           `
-          UPDATE dms
-          SET updated_at = NOW()
+          UPDATE dms SET updated_at = NOW()
           WHERE id = $1
           `,
           [dmId]
         );
 
-        // 4) payload
-        const payload = {
+        io.to(`dm_${dmId}`).emit("receive-dm", {
           id: msgRow.id,
           dm_id: msgRow.dm_id,
           user_id: msgRow.user_id,
           username,
           message: msgRow.content,
           created_at: msgRow.created_at,
-        };
-
-        // 5) 브로드캐스트
-        io.to(`dm_${dmId}`).emit("receive-dm", payload);
+        });
       } catch (err) {
         console.error("SEND_DM_ERROR", err);
       }
     });
 
-    // =====================================================
-    // ✅ 서버(텍스트 채팅방) - 기존 로직 유지
-    // =====================================================
+    // =========================
+    // ✅ 텍스트 룸 (기존 유지)
+    // =========================
     socket.on("join-room", (payload) => {
       const roomId = typeof payload === "string" ? payload : payload?.roomId;
       const joinedUsername = payload?.username || username || "Unknown";
@@ -281,36 +254,32 @@ function initSocket(server) {
       socket.emit("room-info", room || { id: roomId, name: roomId });
       socket.join(roomId);
 
-      const systemMsg = {
+      io.to(roomId).emit("receive-message", {
         id: uuidv4(),
         message: `${joinedUsername}님이 들어왔습니다.`,
         userId: "system",
         username: "System",
         timestamp: new Date().toISOString(),
         isSystem: true,
-      };
-
-      io.to(roomId).emit("receive-message", systemMsg);
+      });
     });
 
     socket.on("send-message", (data = {}) => {
       const { roomId, message } = data;
       if (!roomId || !message) return;
 
-      const msg = {
+      io.to(roomId).emit("receive-message", {
         id: uuidv4(),
         message,
         userId,
         username,
         timestamp: new Date().toISOString(),
-      };
-
-      io.to(roomId).emit("receive-message", msg);
+      });
     });
 
-    // =====================================================
-    // ✅ 연결 해제
-    // =====================================================
+    // =========================
+    // ✅ disconnect 정리
+    // =========================
     socket.on("disconnect", (reason) => {
       log.connection("DISCONNECTED", socket.id, `Reason: ${reason}`);
 
@@ -318,30 +287,18 @@ function initSocket(server) {
       const set = onlineUsers.get(userId);
       if (set) {
         set.delete(socket.id);
-        const remain = set.size;
-        if (remain === 0) onlineUsers.delete(userId);
-
-        log.info(
-          `👤 ONLINE_REMOVE userId=${userId}, socketId=${socket.id}, remainSockets=${remain}`
-        );
+        if (set.size === 0) onlineUsers.delete(userId);
       }
 
+      // voice 정리
       const cid = socket.currentVoiceChannelId;
       if (cid) {
-        const roomName = `voice:${cid}`;
-
         const map = voiceMembers.get(cid);
         if (map) {
           map.delete(socket.id);
           if (map.size === 0) voiceMembers.delete(cid);
         }
-
-        // ✅ (추가) 같은 방 사람들에게 나감 알림
-        socket.to(roomName).emit("voice:peer-left", {
-          channelId: String(cid),
-          peerId: socket.id,
-        });
-
+        io.to(`voice:${cid}`).emit("voice:peer-left", { peerId: socket.id });
         emitVoiceMembers(io, cid);
       }
     });
@@ -350,9 +307,6 @@ function initSocket(server) {
   return io;
 }
 
-/**
- * 라우터 등에서 Socket.IO 인스턴스를 얻기 위한 함수
- */
 function getIo() {
   if (!ioInstance) throw new Error("Socket.IO has not been initialized");
   return ioInstance;

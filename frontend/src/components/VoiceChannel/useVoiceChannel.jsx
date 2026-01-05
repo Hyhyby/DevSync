@@ -268,6 +268,15 @@ export default function useVoiceChannel(socket) {
     },
     [socket, startRemoteVAD, outputVolume]
   );
+  useEffect(() => {
+    if (!socket) return;
+    if (!activeVoiceChannelId) return;
+
+    socket.emit("voice:mic-muted", {
+      channelId: activeVoiceChannelId,
+      micMuted,
+    });
+  }, [socket, activeVoiceChannelId, micMuted]);
 
   // socket 이벤트 핸들러
   useEffect(() => {
@@ -357,6 +366,7 @@ export default function useVoiceChannel(socket) {
     if (cid) socket.emit("leave-voice", { channelId: cid });
 
     setActiveVoiceChannelId(null);
+    setMicMuted(false);
     stopAll();
   }, [socket, activeVoiceChannelId, stopAll]);
 
