@@ -6,33 +6,57 @@ const { authenticateToken } = require("../middleware/auth");
 const { log } = require("../middleware/logger");
 
 /**
- * 📌 채널 메시지 조회
- * GET /api/:serverId/messages/channels/:channelId?limit=50
+ * 📌 채널 메시지 조회 (cursor 기반 무한 스크롤)
+ * GET /api/:serverId/messages/channels/:channelId?before=123&limit=50
  */
 router.get("/channels/:channelId", authenticateToken, async (req, res) => {
   const { serverId, channelId } = req.params;
-  const { limit = 50 } = req.query;
+  const { before, limit = 50 } = req.query;
 
   try {
-    const result = await pool.query(
-      `
-      SELECT 
-        m.id,
-        m.content,
-        m.created_at,
-        u.id AS user_id,
-        u.username
-      FROM channel_messages m
-      JOIN users u ON u.id = m.user_id
-      WHERE m.server_id = $1
-        AND m.channel_id = $2
-      ORDER BY m.created_at DESC
-      LIMIT $3
-      `,
-      [serverId, channelId, Number(limit)]
-    );
+    let query;
+    let params;
 
-    // 최신 → 오래된 순으로 정렬했으니 프론트에서 보기 쉽게 뒤집기
+    if (before) {
+      // 🔹 과거 메시지 불러오기 (cursor)
+      query = `
+        SELECT 
+          m.id,
+          m.content,
+          m.created_at,
+          u.id AS user_id,
+          u.username
+        FROM channel_messages m
+        JOIN users u ON u.id = m.user_id
+        WHERE m.server_id = $1
+          AND m.channel_id = $2
+          AND m.id < $3
+        ORDER BY m.id DESC
+        LIMIT $4
+      `;
+      params = [serverId, channelId, Number(before), Number(limit)];
+    } else {
+      // 🔹 최초 진입: 최신 메시지
+      query = `
+        SELECT 
+          m.id,
+          m.content,
+          m.created_at,
+          u.id AS user_id,
+          u.username
+        FROM channel_messages m
+        JOIN users u ON u.id = m.user_id
+        WHERE m.server_id = $1
+          AND m.channel_id = $2
+        ORDER BY m.id DESC
+        LIMIT $3
+      `;
+      params = [serverId, channelId, Number(limit)];
+    }
+
+    const result = await pool.query(query, params);
+
+    // 최신 → 오래된 순이므로 뒤집어서 반환
     const rows = result.rows.reverse().map((row) => ({
       id: row.id,
       message: row.content,
