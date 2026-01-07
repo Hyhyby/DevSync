@@ -264,17 +264,56 @@ function initSocket(server) {
       });
     });
 
-    socket.on("send-message", (data = {}) => {
-      const { roomId, message } = data;
-      if (!roomId || !message) return;
+    socket.on("send-message", async (data = {}) => {
+      try {
+        const { roomId, serverId, message } = data;
 
-      io.to(roomId).emit("receive-message", {
-        id: uuidv4(),
-        message,
-        userId,
-        username,
-        timestamp: new Date().toISOString(),
-      });
+        const text = (message || "").trim();
+        if (!roomId || !text) return;
+
+        // channelId는 현재 roomId로 쓰고 있으니 숫자 변환(테이블이 integer)
+        const channelId = Number(roomId);
+        const sid = Number(serverId);
+
+        if (!Number.isFinite(channelId) || !Number.isFinite(sid)) return;
+
+        // (권장) 서버 멤버인지 검증
+        const mem = await pool.query(
+          `SELECT 1 FROM server_members WHERE server_id = $1 AND user_id = $2`,
+          [sid, userId]
+        );
+        if (mem.rowCount === 0) return;
+
+        // (권장) 채널이 해당 서버 소속인지 검증
+        const ch = await pool.query(
+          `SELECT 1 FROM server_channels WHERE id = $1 AND server_id = $2`,
+          [channelId, sid]
+        );
+        if (ch.rowCount === 0) return;
+
+        // ✅ DB 저장 (id는 SERIAL이라 넣지 않음)
+        const saved = await pool.query(
+          `
+      INSERT INTO channel_messages (server_id, channel_id, user_id, content)
+      VALUES ($1, $2, $3, $4)
+      RETURNING id, content, created_at
+      `,
+          [sid, channelId, userId, text]
+        );
+
+        const row = saved.rows[0];
+
+        // ✅ 저장된 id/created_at으로 broadcast
+        io.to(String(roomId)).emit("receive-message", {
+          id: row.id,
+          message: row.content,
+          userId,
+          username,
+          timestamp: row.created_at,
+        });
+      } catch (err) {
+        console.error("SEND_MESSAGE_ERROR", err);
+      }
     });
 
     // =========================

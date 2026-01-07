@@ -1,4 +1,4 @@
-// src/components/Server/Servers.jsx
+// src/components/Home/Servers.jsx
 
 import React, { useEffect, useMemo, useState, useCallback } from "react";
 import axios from "axios";
@@ -135,14 +135,6 @@ const ServersBar = ({ onSelectServer, variant = "footer" }) => {
         created = {
           ...s,
           short: emoji || s.name?.charAt(0)?.toUpperCase() || "?",
-        };
-      } else {
-        // 로그인 안 된 디자인 모드일 때는 프론트에서만 더미로
-        created = {
-          id: `local-${Date.now()}`,
-          name,
-          iconUrl: null,
-          short: emoji || name.charAt(0).toUpperCase(),
         };
       }
 
