@@ -12,8 +12,10 @@ const channelRoutes = require("./routes/channelRoutes");
 const messageRoutes = require("./routes/messageRoutes");
 const dmRoutes = require("./routes/dmRoutes");
 const serverInviteRoutes = require("./routes/serverInviteRoutes");
+const uploadRoutes = require("./routes/uploadRoutes");
 
 const app = express();
+const path = require("path");
 
 app.set("trust proxy", true);
 app.use(cors(corsOptions));
@@ -36,6 +38,8 @@ app.use("/api/servers", serverRoutes);
 app.use("/api/:serverId/channels", channelRoutes);
 app.use("/api/:serverId/messages", messageRoutes);
 app.use("/api/:serverId/dm", dmRoutes);
+app.use("/uploads", express.static(path.join(__dirname, "uploads")));
+app.use("/api/:serverId/messages", uploadRoutes);
 
 // Health check
 app.get("/api/health", (_req, res) => {

@@ -34,7 +34,12 @@ router.get("/channels/:channelId", authenticateToken, async (req, res) => {
         ORDER BY m.id DESC
         LIMIT $4
       `;
-      params = [serverId, channelId, Number(before), Number(limit)];
+      params = [
+        Number(serverId),
+        Number(channelId),
+        Number(before),
+        Number(limit),
+      ];
     } else {
       // 🔹 최초 진입: 최신 메시지
       query = `
@@ -51,10 +56,47 @@ router.get("/channels/:channelId", authenticateToken, async (req, res) => {
         ORDER BY m.id DESC
         LIMIT $3
       `;
-      params = [serverId, channelId, Number(limit)];
+      params = [Number(serverId), Number(channelId), Number(limit)];
     }
 
     const result = await pool.query(query, params);
+
+    // ✅ 메시지 id 목록
+    const msgIds = result.rows.map((r) => r.id);
+
+    // ✅ message_id -> files[] 맵 만들기
+    const filesByMessageId = {};
+    if (msgIds.length > 0) {
+      const fRes = await pool.query(
+        `
+        SELECT
+          id,
+          message_id,
+          file_name,
+          file_url,
+          mime_type,
+          file_size,
+          created_at
+        FROM channel_message_files
+        WHERE message_id = ANY($1::bigint[])
+        ORDER BY id ASC
+        `,
+        [msgIds]
+      );
+
+      for (const f of fRes.rows) {
+        const mid = String(f.message_id);
+        if (!filesByMessageId[mid]) filesByMessageId[mid] = [];
+        filesByMessageId[mid].push({
+          id: f.id,
+          fileName: f.file_name,
+          fileUrl: f.file_url,
+          mimeType: f.mime_type,
+          fileSize: f.file_size,
+          createdAt: f.created_at,
+        });
+      }
+    }
 
     // 최신 → 오래된 순이므로 뒤집어서 반환
     const rows = result.rows.reverse().map((row) => ({
@@ -63,6 +105,7 @@ router.get("/channels/:channelId", authenticateToken, async (req, res) => {
       timestamp: row.created_at,
       userId: row.user_id,
       username: row.username,
+      files: filesByMessageId[String(row.id)] || [],
     }));
 
     res.json(rows);

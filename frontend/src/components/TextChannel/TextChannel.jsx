@@ -18,6 +18,9 @@ const TextChannel = ({ serverId, channelId, user }) => {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
 
+  // ✅ 파일 첨부 상태
+  const [selectedFiles, setSelectedFiles] = useState([]); // File[]
+
   // 무한 스크롤 상태
   const [hasMore, setHasMore] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -43,6 +46,23 @@ const TextChannel = ({ serverId, channelId, user }) => {
   );
 
   /* ===============================
+   * ✅ 파일 선택/삭제 핸들러
+   * =============================== */
+  const onPickFiles = useCallback((fileList) => {
+    const arr = Array.from(fileList || []);
+    if (arr.length === 0) return;
+    setSelectedFiles((prev) => [...prev, ...arr]);
+  }, []);
+
+  const removeSelectedFile = useCallback((idx) => {
+    setSelectedFiles((prev) => prev.filter((_, i) => i !== idx));
+  }, []);
+
+  const clearSelectedFiles = useCallback(() => {
+    setSelectedFiles([]);
+  }, []);
+
+  /* ===============================
    * 최초 진입: 최신 메시지 50개
    * =============================== */
   const fetchInitialMessages = useCallback(async () => {
@@ -58,11 +78,10 @@ const TextChannel = ({ serverId, channelId, user }) => {
       setMessages(data);
       setHasMore(data.length === PAGE_SIZE);
 
-      // ✅ 렌더/레이아웃 완료 후 맨 아래로 (setTimeout(0)보다 안정적)
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
           endRef.current?.scrollIntoView({ behavior: "instant" });
-          setShowJumpToBottom(false); // 버튼 쓰고 있다면 같이 꺼주기
+          setShowJumpToBottom(false);
         });
       });
     } catch (err) {
@@ -76,8 +95,9 @@ const TextChannel = ({ serverId, channelId, user }) => {
     if (!channelId) return;
     setMessages([]);
     setHasMore(true);
+    clearSelectedFiles(); // ✅ 채널 바뀌면 첨부 초기화
     fetchInitialMessages();
-  }, [channelId, fetchInitialMessages]);
+  }, [channelId, fetchInitialMessages, clearSelectedFiles]);
 
   /* ===============================
    * 과거 메시지 로드 (무한 스크롤)
@@ -105,10 +125,8 @@ const TextChannel = ({ serverId, channelId, user }) => {
       if (!Array.isArray(res.data) || res.data.length === 0) {
         setHasMore(false);
       } else {
-        // prepend
         setMessages((prev) => [...res.data, ...prev]);
 
-        // 스크롤 위치 유지
         requestAnimationFrame(() => {
           if (!el) return;
           const nextHeight = el.scrollHeight;
@@ -129,15 +147,15 @@ const TextChannel = ({ serverId, channelId, user }) => {
     const el = wrapRef.current;
     if (!el) return;
     const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
-    const atBottom = dist < 80; // 80px 이내면 '맨 아래'
+    const atBottom = dist < 80;
 
     setShowJumpToBottom(!atBottom);
 
-    // 위쪽에 거의 닿으면 과거 메시지 로드
     if (el.scrollTop < 40) {
       loadMoreMessages();
     }
   };
+
   const jumpToBottom = useCallback(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
     setShowJumpToBottom(false);
@@ -167,7 +185,7 @@ const TextChannel = ({ serverId, channelId, user }) => {
     socket.on("receive-message", (msg) => {
       setMessages((prev) => [...prev, msg]);
 
-      // ✅ 내가 보낸 메시지는 무조건 맨 아래로
+      // 내가 보낸 메시지면 무조건 맨 아래
       if (msg.username === user.username) {
         requestAnimationFrame(() => {
           endRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -176,7 +194,7 @@ const TextChannel = ({ serverId, channelId, user }) => {
         return;
       }
 
-      // ✅ 남이 보낸 메시지는: 내가 아래 근처일 때만 자동 스크롤
+      // 남이 보낸 메시지는 아래 근처일 때만 자동 스크롤
       const el = wrapRef.current;
       if (!el) return;
 
@@ -203,13 +221,49 @@ const TextChannel = ({ serverId, channelId, user }) => {
   }, [channelId, token, user.username]);
 
   /* ===============================
-   * 메시지 전송
+   * ✅ 메시지 전송 (텍스트는 소켓, 파일 있으면 HTTP 업로드)
    * =============================== */
-  const sendMessage = (e) => {
+  const sendMessage = async (e) => {
     e.preventDefault();
-    const text = input.trim();
-    if (!text) return;
 
+    const text = input.trim();
+    const hasFiles = selectedFiles.length > 0;
+
+    // 아무것도 없으면 전송 X
+    if (!text && !hasFiles) return;
+
+    // ✅ 파일이 있으면: HTTP 업로드로 처리 (백엔드가 저장 후 receive-message emit 해줌)
+    if (hasFiles) {
+      try {
+        const form = new FormData();
+        if (text) form.append("message", text);
+        selectedFiles.forEach((f) => form.append("files", f)); // upload.array("files", ...)
+
+        await api.post(
+          `/api/${serverId}/messages/channels/${channelId}/files`,
+          form
+        );
+
+        setInput("");
+        clearSelectedFiles();
+
+        // 업로드 후에도 UX상 맨 아래로
+        requestAnimationFrame(() => {
+          endRef.current?.scrollIntoView({ behavior: "smooth" });
+        });
+        setShowJumpToBottom(false);
+        return;
+      } catch (err) {
+        console.error(
+          "UPLOAD_MESSAGE_ERROR",
+          err?.response?.data || err?.message
+        );
+        alert(err?.response?.data?.error || "파일 업로드 실패");
+        return;
+      }
+    }
+
+    // ✅ 파일 없으면: 기존 소켓 텍스트 전송
     if (!socketRef.current?.connected) return;
 
     socketRef.current.emit("send-message", {
@@ -219,12 +273,9 @@ const TextChannel = ({ serverId, channelId, user }) => {
     });
 
     setInput("");
-    // ✅ 내가 보낸 순간은 무조건 맨 아래로
     requestAnimationFrame(() => {
       endRef.current?.scrollIntoView({ behavior: "smooth" });
     });
-
-    // ✅ 아래로 내려갔으니 버튼 숨김
     setShowJumpToBottom(false);
   };
 
@@ -241,6 +292,12 @@ const TextChannel = ({ serverId, channelId, user }) => {
       hasMore={hasMore}
       showJumpToBottom={showJumpToBottom}
       onJumpToBottom={jumpToBottom}
+      loadingMore={loadingMore}
+      // ✅ 파일첨부 props 추가
+      selectedFiles={selectedFiles}
+      onPickFiles={onPickFiles}
+      removeSelectedFile={removeSelectedFile}
+      clearSelectedFiles={clearSelectedFiles}
     />
   );
 };
