@@ -7,7 +7,9 @@ const { JWT_SECRET } = require("./config/network");
 const { isAllowedOrigin } = require("./config/cors");
 const { socketLogger, log } = require("./middleware/logger");
 const { loadRooms } = require("./utils/room");
-
+const { generateReply } = require("./services/botService");
+const BOT_USER_ID = Number(process.env.BOT_USER_ID || 9999999);
+const BOT_USERNAME = process.env.BOT_USERNAME || "DevSyncBot";
 // 방 목록 (파일에서 로딩)
 let rooms = loadRooms();
 
@@ -311,6 +313,63 @@ function initSocket(server) {
           username,
           timestamp: row.created_at,
         });
+        // =========================
+        // ✅ BOT (대화형 챗봇)
+        // =========================
+        // 봇 자신 메시지는 무시
+        if (userId === BOT_USER_ID) return;
+
+        const prompt = parseBotTrigger(text);
+        if (!prompt) return;
+
+        // 레이트리밋 (유저가 연타하면 비용 폭발 방지)
+        if (isRateLimited({ serverId: sid, channelId, userId })) {
+          io.to(String(roomId)).emit("receive-message", {
+            id: uuidv4(),
+            message: `${username}님, 잠시만요! (봇 호출은 몇 초 간격으로 부탁해요)`,
+            userId: BOT_USER_ID,
+            username: BOT_USERNAME,
+            timestamp: new Date().toISOString(),
+            isSystem: false,
+          });
+          return;
+        }
+
+        // 최근 대화 컨텍스트 로드
+        const historyText = await loadRecentChannelHistory({
+          serverId: sid,
+          channelId,
+          limit: 40,
+        });
+
+        // GPT 답변 생성
+        const reply = await generateReply({
+          historyText,
+          userPrompt: prompt,
+        });
+
+        if (!reply) return;
+
+        // 봇 메시지 DB 저장
+        const savedBot = await pool.query(
+          `
+          INSERT INTO channel_messages (server_id, channel_id, user_id, content)
+          VALUES ($1, $2, $3, $4)
+          RETURNING id, content, created_at
+          `,
+          [sid, channelId, BOT_USER_ID, reply]
+        );
+
+        const botRow = savedBot.rows[0];
+
+        // 봇 메시지 브로드캐스트
+        io.to(String(roomId)).emit("receive-message", {
+          id: botRow.id,
+          message: botRow.content,
+          userId: BOT_USER_ID,
+          username: BOT_USERNAME,
+          timestamp: botRow.created_at,
+        });
       } catch (err) {
         console.error("SEND_MESSAGE_ERROR", err);
       }
@@ -349,6 +408,52 @@ function initSocket(server) {
 function getIo() {
   if (!ioInstance) throw new Error("Socket.IO has not been initialized");
   return ioInstance;
+}
+function parseBotTrigger(text) {
+  const t = (text || "").trim();
+  const prefix = "@DevSyncBot";
+  if (!t.startsWith(prefix)) return null;
+  const prompt = t.slice(prefix.length).trim();
+  return prompt.length ? prompt : null;
+}
+
+// 채널별/유저별 과도 호출 방지 (간단 버전)
+const botCooldown = new Map(); // key: `${serverId}:${channelId}:${userId}` -> lastMs
+function isRateLimited({ serverId, channelId, userId, windowMs = 5000 }) {
+  const key = `${serverId}:${channelId}:${userId}`;
+  const now = Date.now();
+  const last = botCooldown.get(key) || 0;
+  if (now - last < windowMs) return true;
+  botCooldown.set(key, now);
+  return false;
+}
+async function loadRecentChannelHistory({ serverId, channelId, limit = 40 }) {
+  const res = await pool.query(
+    `
+    SELECT
+      m.id,
+      m.content,
+      u.username,
+      u.is_bot
+    FROM channel_messages m
+    JOIN users u ON u.id = m.user_id
+    WHERE m.server_id = $1 AND m.channel_id = $2
+    ORDER BY m.id DESC
+    LIMIT $3
+    `,
+    [serverId, channelId, limit]
+  );
+
+  // 오래된 → 최신 순으로
+  const rows = res.rows.reverse();
+
+  // LLM 입력용 텍스트 직렬화
+  return rows
+    .map((r) => {
+      const name = r.is_bot ? BOT_USERNAME : r.username;
+      return `${name}: ${r.content}`;
+    })
+    .join("\n");
 }
 
 module.exports = {

@@ -25,7 +25,8 @@ router.get("/channels/:channelId", authenticateToken, async (req, res) => {
           m.content,
           m.created_at,
           u.id AS user_id,
-          u.username
+          u.username,
+          u.is_bot
         FROM channel_messages m
         JOIN users u ON u.id = m.user_id
         WHERE m.server_id = $1
@@ -48,7 +49,8 @@ router.get("/channels/:channelId", authenticateToken, async (req, res) => {
           m.content,
           m.created_at,
           u.id AS user_id,
-          u.username
+          u.username,
+          u.is_bot
         FROM channel_messages m
         JOIN users u ON u.id = m.user_id
         WHERE m.server_id = $1
@@ -104,6 +106,7 @@ router.get("/channels/:channelId", authenticateToken, async (req, res) => {
       message: row.content,
       timestamp: row.created_at,
       userId: row.user_id,
+      isBot: row.is_bot,
       username: row.username,
       files: filesByMessageId[String(row.id)] || [],
     }));
