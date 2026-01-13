@@ -26,6 +26,93 @@ export default function useVoiceChannel(socket) {
   const outgoingStreamRef = useRef(null); // RTC로 보낼 stream
   const micGainRef = useRef(null); // GainNode
   const micDestRef = useRef(null); // MediaStreamDestination
+  const [liveCaption, setLiveCaption] = useState(""); // 현재 말하는 중(중간결과)
+  const [finalCaption, setFinalCaption] = useState(""); // 말 끝났을 때 확정 텍스트(짧게)
+  const recognitionRef = useRef(null);
+  const captionTimerRef = useRef(null);
+  const getSpeechRecognition = () => {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    return SR ? new SR() : null;
+  };
+
+  const stopRecognition = useCallback(() => {
+    try {
+      if (captionTimerRef.current) clearTimeout(captionTimerRef.current);
+      captionTimerRef.current = null;
+
+      const rec = recognitionRef.current;
+      if (rec) {
+        rec.onresult = null;
+        rec.onerror = null;
+        rec.onend = null;
+        rec.stop();
+      }
+    } catch {}
+    recognitionRef.current = null;
+    setLiveCaption("");
+  }, []);
+
+  const startRecognition = useCallback(
+    ({ lang = "ko-KR" } = {}) => {
+      // 중복 시작 방지
+      if (recognitionRef.current) return true;
+
+      const rec = getSpeechRecognition();
+      if (!rec) return false;
+
+      rec.lang = lang;
+      rec.continuous = true;
+      rec.interimResults = true;
+
+      rec.onresult = (event) => {
+        let interim = "";
+        let finalText = "";
+
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const text = event.results[i][0].transcript;
+          if (event.results[i].isFinal) finalText += text;
+          else interim += text;
+        }
+
+        if (interim) setLiveCaption(interim.trim());
+
+        // final이 들어오면 “확정 자막”으로 잠깐 띄우고, live는 비움
+        if (finalText.trim()) {
+          setFinalCaption(finalText.trim());
+          setLiveCaption("");
+
+          // 확정 자막은 2~3초 후 자동 제거(원하는 UX)
+          if (captionTimerRef.current) clearTimeout(captionTimerRef.current);
+          captionTimerRef.current = setTimeout(() => setFinalCaption(""), 2500);
+        }
+      };
+
+      rec.onerror = (e) => {
+        // not-allowed / no-speech / network 등 케이스가 있음
+        console.warn("[SpeechRecognition] error:", e?.error || e);
+      };
+
+      rec.onend = () => {
+        // continuous라도 환경에 따라 중간에 끝날 수 있음.
+        // 음성 채널에 아직 들어가 있으면 자동 재시작
+        if (activeVoiceChannelId) {
+          try {
+            rec.start();
+          } catch {}
+        }
+      };
+
+      try {
+        rec.start();
+        recognitionRef.current = rec;
+        return true;
+      } catch (e) {
+        console.warn("[SpeechRecognition] start failed:", e);
+        return false;
+      }
+    },
+    [activeVoiceChannelId]
+  );
 
   const ensureAudioCtx = useCallback(async () => {
     if (!audioCtxRef.current) {
@@ -397,6 +484,7 @@ export default function useVoiceChannel(socket) {
 
       setActiveVoiceChannelId(String(channelId));
       socket.emit("join-voice", { channelId: String(channelId) });
+      startRecognition({ lang: "ko-KR" });
     },
     [socket, ensureMic, ensureAudioCtx, startLocalVAD, applyMicMuted, micMuted]
   );
@@ -409,6 +497,7 @@ export default function useVoiceChannel(socket) {
     setActiveVoiceChannelId(null);
     setMicMuted(false);
     stopAll();
+    stopRecognition();
     outgoingStreamRef.current = null;
     micGainRef.current = null;
     micDestRef.current = null;
@@ -428,5 +517,7 @@ export default function useVoiceChannel(socket) {
     setOutputVolume,
     inputVolume,
     setInputVolume,
+    liveCaption,
+    finalCaption,
   };
 }

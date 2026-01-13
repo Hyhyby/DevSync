@@ -53,6 +53,8 @@ const ServerPage = () => {
     setOutputVolume,
     inputVolume,
     setInputVolume,
+    liveCaption,
+    finalCaption,
   } = useVoiceChannel(socket);
   // 🔹 텍스트 / 음성 채널
   const [textChannels, setTextChannels] = useState([]);
@@ -447,6 +449,15 @@ const ServerPage = () => {
         onSelectServer={handleSelectServer}
         onLeaveServer={handleLeaveServer}
       />
+      {/* ✅ 음성 자막 오버레이 */}
+      {activeVoiceChannelId && (liveCaption || finalCaption) && (
+        <div className="pointer-events-none fixed bottom-6 left-1/2 -translate-x-1/2 z-[9999]">
+          <div className="max-w-[70vw] px-4 py-2 rounded-xl bg-black/70 text-white text-sm shadow-lg">
+            <span className="font-semibold mr-2">{displayName}</span>
+            <span className="opacity-90">{liveCaption || finalCaption}</span>
+          </div>
+        </div>
+      )}
 
       {/* 본문 3칼럼 레이아웃 */}
       <div className="flex flex-1 min-h-0 overflow-hidden">
