@@ -107,7 +107,29 @@ function initSocket(server) {
         io.to(`voice:${prev}`).emit("voice:peer-left", { peerId: socket.id });
         emitVoiceMembers(io, prev);
       }
+      // ✅ 자막 릴레이
+      socket.on("voice:caption", ({ channelId, text, isFinal }) => {
+        const cid = String(channelId || socket.currentVoiceChannelId || "");
+        if (!cid) return;
 
+        // 같은 채널 안에서만
+        if (String(socket.currentVoiceChannelId || "") !== cid) return;
+
+        const payload = {
+          channelId: cid,
+          fromSocketId: socket.id,
+          fromUserId: userId,
+          fromUsername: username,
+          text: String(text || "").trim(),
+          isFinal: !!isFinal,
+          ts: Date.now(),
+        };
+
+        if (!payload.text) return;
+
+        // ✅ 같은 음성 채널(room) 전체에게 브로드캐스트
+        io.to(`voice:${cid}`).emit("voice:caption", payload);
+      });
       // 새 채널 join
       socket.currentVoiceChannelId = cid;
       socket.join(`voice:${cid}`);

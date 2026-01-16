@@ -28,6 +28,7 @@ export default function useVoiceChannel(socket) {
   const micDestRef = useRef(null); // MediaStreamDestination
   const [liveCaption, setLiveCaption] = useState(""); // 현재 말하는 중(중간결과)
   const [finalCaption, setFinalCaption] = useState(""); // 말 끝났을 때 확정 텍스트(짧게)
+  const [remoteCaptions, setRemoteCaptions] = useState({});
   const recognitionRef = useRef(null);
   const captionTimerRef = useRef(null);
   const getSpeechRecognition = () => {
@@ -80,6 +81,32 @@ export default function useVoiceChannel(socket) {
         if (finalText.trim()) {
           setFinalCaption(finalText.trim());
           setLiveCaption("");
+          // interim
+          if (interim) {
+            const t = interim.trim();
+            setLiveCaption(t);
+
+            // ✅ 상대에게도 중간 자막 전송 (너무 잦으면 부담 → 간단 throttling 권장)
+            socket?.emit("voice:caption", {
+              channelId: activeVoiceChannelId,
+              text: t,
+              isFinal: false,
+            });
+          }
+
+          // final
+          if (finalText.trim()) {
+            const t = finalText.trim();
+            setFinalCaption(t);
+            setLiveCaption("");
+
+            // ✅ 상대에게 확정 자막 전송
+            socket?.emit("voice:caption", {
+              channelId: activeVoiceChannelId,
+              text: t,
+              isFinal: true,
+            });
+          }
 
           // 확정 자막은 2~3초 후 자동 제거(원하는 UX)
           if (captionTimerRef.current) clearTimeout(captionTimerRef.current);
@@ -113,6 +140,50 @@ export default function useVoiceChannel(socket) {
     },
     [activeVoiceChannelId]
   );
+  useEffect(() => {
+    if (!socket) return;
+
+    const onCaption = (p) => {
+      // 내가 보낸 건 굳이 remote로 안 넣어도 됨(원하면 제거)
+      if (p.fromSocketId === socket.id) return;
+
+      setRemoteCaptions((prev) => {
+        const cur = prev[p.fromSocketId] || {
+          username: p.fromUsername,
+          live: "",
+          final: "",
+        };
+        const next = { ...prev };
+
+        if (p.isFinal) {
+          next[p.fromSocketId] = {
+            ...cur,
+            username: p.fromUsername,
+            live: "",
+            final: p.text,
+          };
+          // final은 잠깐만 보이게
+          setTimeout(() => {
+            setRemoteCaptions((pp) => {
+              const cc = pp[p.fromSocketId];
+              if (!cc) return pp;
+              return { ...pp, [p.fromSocketId]: { ...cc, final: "" } };
+            });
+          }, 2500);
+        } else {
+          next[p.fromSocketId] = {
+            ...cur,
+            username: p.fromUsername,
+            live: p.text,
+          };
+        }
+        return next;
+      });
+    };
+
+    socket.on("voice:caption", onCaption);
+    return () => socket.off("voice:caption", onCaption);
+  }, [socket]);
 
   const ensureAudioCtx = useCallback(async () => {
     if (!audioCtxRef.current) {
@@ -519,5 +590,6 @@ export default function useVoiceChannel(socket) {
     setInputVolume,
     liveCaption,
     finalCaption,
+    remoteCaptions,
   };
 }

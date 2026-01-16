@@ -55,6 +55,7 @@ const ServerPage = () => {
     setInputVolume,
     liveCaption,
     finalCaption,
+    remoteCaptions,
   } = useVoiceChannel(socket);
   // 🔹 텍스트 / 음성 채널
   const [textChannels, setTextChannels] = useState([]);
@@ -449,13 +450,32 @@ const ServerPage = () => {
         onSelectServer={handleSelectServer}
         onLeaveServer={handleLeaveServer}
       />
-      {/* ✅ 음성 자막 오버레이 */}
-      {activeVoiceChannelId && (liveCaption || finalCaption) && (
-        <div className="pointer-events-none fixed bottom-6 left-1/2 -translate-x-1/2 z-[9999]">
-          <div className="max-w-[70vw] px-4 py-2 rounded-xl bg-black/70 text-white text-sm shadow-lg">
-            <span className="font-semibold mr-2">{displayName}</span>
-            <span className="opacity-90">{liveCaption || finalCaption}</span>
-          </div>
+      {activeVoiceChannelId && (
+        <div className="pointer-events-none fixed bottom-6 left-1/2 -translate-x-1/2 z-[9999] space-y-2">
+          {/* ✅ 내 자막 */}
+          {(liveCaption || finalCaption) && (
+            <div className="max-w-[70vw] px-4 py-2 rounded-xl bg-black/70 text-white text-sm shadow-lg">
+              <span className="font-semibold mr-2">{displayName}</span>
+              <span className="opacity-90">{liveCaption || finalCaption}</span>
+            </div>
+          )}
+
+          {/* ✅ 상대 자막들 */}
+          {Object.entries(remoteCaptions || {}).map(([peerId, c]) => {
+            const text = c.live || c.final;
+            if (!text) return null;
+            return (
+              <div
+                key={peerId}
+                className="max-w-[70vw] px-4 py-2 rounded-xl bg-black/70 text-white text-sm shadow-lg"
+              >
+                <span className="font-semibold mr-2">
+                  {c.username || "상대"}
+                </span>
+                <span className="opacity-90">{text}</span>
+              </div>
+            );
+          })}
         </div>
       )}
 
