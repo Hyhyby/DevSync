@@ -65,6 +65,10 @@ function initSocket(server) {
   });
 
   io.on("connection", (socket) => {
+    socket.onAny((event, ...args) => {
+      console.log("[ON_ANY]", socket.id, event, args?.[0]);
+    });
+
     socketLogger(socket);
 
     const user = socket.user;
@@ -87,8 +91,51 @@ function initSocket(server) {
     // ✅ VOICE
     // =========================
     socket.currentVoiceChannelId = null;
+    // ✅ 자막 릴레이
+    socket.on("voice:caption", ({ channelId, text, isFinal }) => {
+      console.log("[CAPTION RECV]", {
+        socketId: socket.id,
+        curCid: socket.currentVoiceChannelId,
+        gotChannelId: channelId,
+        text,
+        isFinal,
+      });
+
+      const cid = String(channelId || socket.currentVoiceChannelId || "");
+      if (!cid) return console.log("[CAPTION DROP] no cid");
+
+      if (String(socket.currentVoiceChannelId || "") !== cid)
+        return console.log("[CAPTION DROP] not same channel", {
+          cur: socket.currentVoiceChannelId,
+          cid,
+        });
+
+      const clean = String(text || "").trim();
+      if (!clean) return console.log("[CAPTION DROP] empty text");
+
+      const payload = {
+        channelId: cid,
+        fromSocketId: socket.id,
+        fromUserId: userId,
+        fromUsername: username,
+        text: clean,
+        isFinal: !!isFinal,
+        ts: Date.now(),
+      };
+
+      const room = io.sockets.adapter.rooms.get(`voice:${cid}`);
+
+      console.log("[CAPTION CAST]", {
+        room: `voice:${cid}`,
+        roomSize: room?.size || 0,
+        text: clean,
+      });
+
+      io.to(`voice:${cid}`).emit("voice:caption", payload);
+    });
 
     socket.on("join-voice", ({ channelId }) => {
+      console.log("[JOIN-VOICE RECV]", { socketId: socket.id, channelId });
       if (!channelId) return;
       const cid = String(channelId);
 
@@ -107,32 +154,13 @@ function initSocket(server) {
         io.to(`voice:${prev}`).emit("voice:peer-left", { peerId: socket.id });
         emitVoiceMembers(io, prev);
       }
-      // ✅ 자막 릴레이
-      socket.on("voice:caption", ({ channelId, text, isFinal }) => {
-        const cid = String(channelId || socket.currentVoiceChannelId || "");
-        if (!cid) return;
 
-        // 같은 채널 안에서만
-        if (String(socket.currentVoiceChannelId || "") !== cid) return;
-
-        const payload = {
-          channelId: cid,
-          fromSocketId: socket.id,
-          fromUserId: userId,
-          fromUsername: username,
-          text: String(text || "").trim(),
-          isFinal: !!isFinal,
-          ts: Date.now(),
-        };
-
-        if (!payload.text) return;
-
-        // ✅ 같은 음성 채널(room) 전체에게 브로드캐스트
-        io.to(`voice:${cid}`).emit("voice:caption", payload);
-      });
       // 새 채널 join
       socket.currentVoiceChannelId = cid;
       socket.join(`voice:${cid}`);
+      // ✅ (추가) room size 확인
+      const room = io.sockets.adapter.rooms.get(`voice:${cid}`);
+      console.log("[JOIN-VOICE ROOM]", { cid, roomSize: room?.size || 0 });
 
       if (!voiceMembers.has(cid)) voiceMembers.set(cid, new Map());
       const map = voiceMembers.get(cid);

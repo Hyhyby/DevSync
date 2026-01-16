@@ -31,6 +31,12 @@ export default function useVoiceChannel(socket) {
   const [remoteCaptions, setRemoteCaptions] = useState({});
   const recognitionRef = useRef(null);
   const captionTimerRef = useRef(null);
+  const activeVoiceChannelIdRef = useRef(null);
+
+  useEffect(() => {
+    activeVoiceChannelIdRef.current = activeVoiceChannelId;
+  }, [activeVoiceChannelId]);
+
   const getSpeechRecognition = () => {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     return SR ? new SR() : null;
@@ -75,40 +81,39 @@ export default function useVoiceChannel(socket) {
           else interim += text;
         }
 
-        if (interim) setLiveCaption(interim.trim());
+        // 🔎 interim
+        if (interim.trim()) {
+          const t = interim.trim();
+          console.log("[CAPTION EMIT][INTERIM]", {
+            cid: activeVoiceChannelIdRef.current,
+            text: t,
+          });
 
-        // final이 들어오면 “확정 자막”으로 잠깐 띄우고, live는 비움
+          setLiveCaption(t);
+          socket?.emit("voice:caption", {
+            channelId: activeVoiceChannelIdRef.current,
+            text: t,
+            isFinal: false,
+          });
+        }
+
+        // 🔎 final
         if (finalText.trim()) {
-          setFinalCaption(finalText.trim());
+          const t = finalText.trim();
+          console.log("[CAPTION EMIT][FINAL]", {
+            cid: activeVoiceChannelIdRef.current,
+            text: t,
+          });
+
+          setFinalCaption(t);
           setLiveCaption("");
-          // interim
-          if (interim) {
-            const t = interim.trim();
-            setLiveCaption(t);
 
-            // ✅ 상대에게도 중간 자막 전송 (너무 잦으면 부담 → 간단 throttling 권장)
-            socket?.emit("voice:caption", {
-              channelId: activeVoiceChannelId,
-              text: t,
-              isFinal: false,
-            });
-          }
+          socket?.emit("voice:caption", {
+            channelId: activeVoiceChannelIdRef.current,
+            text: t,
+            isFinal: true,
+          });
 
-          // final
-          if (finalText.trim()) {
-            const t = finalText.trim();
-            setFinalCaption(t);
-            setLiveCaption("");
-
-            // ✅ 상대에게 확정 자막 전송
-            socket?.emit("voice:caption", {
-              channelId: activeVoiceChannelId,
-              text: t,
-              isFinal: true,
-            });
-          }
-
-          // 확정 자막은 2~3초 후 자동 제거(원하는 UX)
           if (captionTimerRef.current) clearTimeout(captionTimerRef.current);
           captionTimerRef.current = setTimeout(() => setFinalCaption(""), 2500);
         }
@@ -120,9 +125,7 @@ export default function useVoiceChannel(socket) {
       };
 
       rec.onend = () => {
-        // continuous라도 환경에 따라 중간에 끝날 수 있음.
-        // 음성 채널에 아직 들어가 있으면 자동 재시작
-        if (activeVoiceChannelId) {
+        if (activeVoiceChannelIdRef.current) {
           try {
             rec.start();
           } catch {}
@@ -144,7 +147,8 @@ export default function useVoiceChannel(socket) {
     if (!socket) return;
 
     const onCaption = (p) => {
-      // 내가 보낸 건 굳이 remote로 안 넣어도 됨(원하면 제거)
+      console.log("[CAPTION IN]", p);
+
       if (p.fromSocketId === socket.id) return;
 
       setRemoteCaptions((prev) => {
@@ -162,7 +166,7 @@ export default function useVoiceChannel(socket) {
             live: "",
             final: p.text,
           };
-          // final은 잠깐만 보이게
+
           setTimeout(() => {
             setRemoteCaptions((pp) => {
               const cc = pp[p.fromSocketId];
@@ -184,6 +188,9 @@ export default function useVoiceChannel(socket) {
     socket.on("voice:caption", onCaption);
     return () => socket.off("voice:caption", onCaption);
   }, [socket]);
+  useEffect(() => {
+    console.log("[REMOTE CAPTIONS STATE]", remoteCaptions);
+  }, [remoteCaptions]);
 
   const ensureAudioCtx = useCallback(async () => {
     if (!audioCtxRef.current) {
@@ -547,17 +554,36 @@ export default function useVoiceChannel(socket) {
   const joinVoice = useCallback(
     async (channelId) => {
       if (!socket) return;
+
+      const cid = String(channelId);
+      console.log("[JOIN VOICE]", {
+        cid,
+        socketId: socket.id,
+      });
+
       await ensureMic();
       await ensureMicPipeline();
       applyMicMuted(micMuted);
-      await ensureAudioCtx(); // suspended 대비
+      await ensureAudioCtx();
       await startLocalVAD();
 
-      setActiveVoiceChannelId(String(channelId));
-      socket.emit("join-voice", { channelId: String(channelId) });
+      setActiveVoiceChannelId(cid);
+      activeVoiceChannelIdRef.current = cid;
+
+      socket.emit("join-voice", { channelId: cid });
+
       startRecognition({ lang: "ko-KR" });
     },
-    [socket, ensureMic, ensureAudioCtx, startLocalVAD, applyMicMuted, micMuted]
+    [
+      socket,
+      ensureMic,
+      ensureMicPipeline,
+      ensureAudioCtx,
+      startLocalVAD,
+      applyMicMuted,
+      micMuted,
+      startRecognition,
+    ]
   );
 
   const leaveVoice = useCallback(() => {
