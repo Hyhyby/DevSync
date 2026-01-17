@@ -10,6 +10,156 @@ const { loadRooms } = require("./utils/room");
 const { generateReply } = require("./services/botService");
 const BOT_USER_ID = Number(process.env.BOT_USER_ID || 9999999);
 const BOT_USERNAME = process.env.BOT_USERNAME || "DevSyncBot";
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+const OpenAI = require("openai");
+const { toFile } = require("openai/uploads");
+const sttInFlight = new Map(); // socketId -> boolean
+const sttSessions = new Map();
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const { spawn } = require("child_process");
+
+const FFMPEG_PATH = process.env.FFMPEG_PATH || "ffmpeg";
+function isWebmHeader(buf) {
+  // EBML(WebM) 헤더: 1A 45 DF A3
+  return (
+    Buffer.isBuffer(buf) &&
+    buf.length >= 4 &&
+    buf[0] === 0x1a &&
+    buf[1] === 0x45 &&
+    buf[2] === 0xdf &&
+    buf[3] === 0xa3
+  );
+}
+function shouldEmitCaption(text) {
+  const t = String(text || "").trim();
+  if (!t) return false;
+
+  // 너무 짧으면(잡음 확률↑)
+  if (t.length < 2) return false;
+
+  // 너무 길면(무음/잡음에서 이상하게 길어지는 케이스 방지)
+  if (t.length > 140) return false;
+
+  // 자주 섞이는 에러/시스템 문구 차단
+  const BLOCK_PATTERNS = [
+    /network error/i,
+    /speechrecognition/i,
+    /not[- ]allowed/i,
+    /denied/i,
+    /permission/i,
+    /mic/i,
+    /오류/i,
+    /에러/i,
+    /권한/i,
+    /마이크/i,
+    /잠시 후/i,
+    /다시 시도/i,
+  ];
+  if (BLOCK_PATTERNS.some((re) => re.test(t))) return false;
+
+  // 헛자막으로 자주 나오는 특정 문구 차단(필요시 더 추가)
+  const BLOCK_EXACT = new Set([
+    "시청해주셔서 감사합니다.",
+    "구독과 좋아요 부탁드립니다",
+    "MBC 뉴스 이덕영입니다.",
+    "시청해주셔서 감사합니다.",
+  ]);
+  if (BLOCK_EXACT.has(t)) return false;
+
+  return true;
+}
+
+function startSttSession(socketId) {
+  const webmPath = path.join(
+    os.tmpdir(),
+    `devsync-stt-${socketId}-${Date.now()}.webm`
+  );
+  const s = { webmPath, startedAt: Date.now() };
+  sttSessions.set(socketId, s);
+  return s;
+}
+
+function cleanupSttSession(socketId) {
+  const s = sttSessions.get(socketId);
+  if (s?.webmPath) {
+    try {
+      fs.unlinkSync(s.webmPath);
+    } catch {}
+  }
+  sttSessions.delete(socketId);
+  sttInFlight.delete(socketId);
+}
+
+function appendWebm(session, buf) {
+  fs.appendFileSync(session.webmPath, buf);
+}
+
+async function convertWebmToWav(webmPath) {
+  const wavPath = webmPath.replace(/\.webm$/i, ".wav");
+
+  await new Promise((resolve, reject) => {
+    // mono + 16kHz로 고정(Whisper 안정)
+    const args = ["-y", "-i", webmPath, "-ac", "1", "-ar", "16000", wavPath];
+    const p = spawn(FFMPEG_PATH, args);
+
+    let err = "";
+    p.stderr.on("data", (d) => (err += d.toString()));
+    p.on("error", reject);
+    p.on("close", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`ffmpeg failed (${code}): ${err}`));
+    });
+  });
+
+  return wavPath;
+}
+
+async function transcribeWavWithWhisper(wavPath, { language = "ko" } = {}) {
+  const resp = await openai.audio.transcriptions.create({
+    model: "whisper-1",
+    file: fs.createReadStream(wavPath),
+    language,
+  });
+  return (resp?.text || "").trim();
+}
+function normalizeMime(mimeType = "") {
+  return String(mimeType).split(";")[0].trim().toLowerCase();
+}
+
+function extFromMime(mime) {
+  // file name에 붙일 확장자(점 포함)
+  if (!mime) return ".webm";
+  if (mime.includes("webm")) return ".webm";
+  if (mime.includes("wav")) return ".wav";
+  if (mime.includes("mpeg") || mime.includes("mp3")) return ".mp3";
+  if (mime.includes("ogg") || mime.includes("oga")) return ".ogg";
+  if (mime.includes("mp4") || mime.includes("m4a")) return ".mp4";
+  return ".webm";
+}
+
+async function transcribeBufferWithWhisper(
+  buffer,
+  mimeType,
+  { language = "ko" } = {}
+) {
+  const mime = normalizeMime(mimeType);
+  const ext = extFromMime(mime);
+
+  // 🔥 파일명에 확장자 필수 + Content-Type 지정
+  const file = await toFile(buffer, `chunk.${ext}`, { type: mime });
+
+  const resp = await openai.audio.transcriptions.create({
+    model: "whisper-1",
+    file,
+    language, // 한국어 고정이면 ko
+  });
+
+  // openai sdk 응답은 보통 { text: "..." }
+  return resp?.text || "";
+}
+
 // 방 목록 (파일에서 로딩)
 let rooms = loadRooms();
 
@@ -91,6 +241,71 @@ function initSocket(server) {
     // ✅ VOICE
     // =========================
     socket.currentVoiceChannelId = null;
+    // ✅ STT 호출 과도 방지(간단 쿨다운)
+    socket._lastSttAt = 0;
+
+    function toNodeBuffer(x) {
+      if (!x) return null;
+      if (Buffer.isBuffer(x)) return x;
+      if (x instanceof Uint8Array) return Buffer.from(x);
+      if (x instanceof ArrayBuffer) return Buffer.from(new Uint8Array(x));
+      if (x?.type === "Buffer" && Array.isArray(x.data))
+        return Buffer.from(x.data);
+      return Buffer.from(x);
+    }
+
+    socket.on("voice:audio-chunk", async (p) => {
+      // ✅ 간단 쿨다운(비용/폭주 방지) - 1.2초 이내 재호출 무시
+      const now = Date.now();
+      if (now - (socket._lastSttAt || 0) < 1200) return;
+      socket._lastSttAt = now;
+
+      try {
+        const cid = String(p.channelId);
+        const mimeType = p.mimeType || "audio/webm";
+        const audioBuf = toNodeBuffer(p.audio);
+
+        // 너무 작은 버퍼는 잡음/깨짐일 확률 높음
+        if (!audioBuf || audioBuf.length < 1500) return;
+
+        // ✅ isFinal만 처리(비용 방지)
+        if (!p.isFinal) return;
+
+        // ✅ 동시 STT 요청 방지
+        if (sttInFlight.get(socket.id)) return;
+        sttInFlight.set(socket.id, true);
+
+        // ✅ Whisper 호출
+        const text = await transcribeBufferWithWhisper(audioBuf, mimeType, {
+          language: "ko",
+        });
+
+        const cleaned = String(text || "").trim();
+
+        // ✅ (핵심) 헛자막/이상문장/에러성 문구면 emit 금지
+        if (!shouldEmitCaption(cleaned)) {
+          console.log("[STT] dropped caption:", { cleaned });
+          return;
+        }
+
+        // ✅ 정상일 때만 emit
+        io.to(`voice:${cid}`).emit("voice:caption", {
+          channelId: cid,
+          fromSocketId: socket.id,
+          fromUsername: socket.user?.username || "Unknown",
+          text: cleaned,
+          isFinal: true,
+          ts: Date.now(),
+        });
+      } catch (e) {
+        // ✅ 에러면 “아예 자막 emit 안 함”
+        console.error("[STT] voice:audio-chunk failed:", e?.message || e);
+      } finally {
+        // ✅ false로 남기지 말고 완전 제거
+        sttInFlight.delete(socket.id);
+      }
+    });
+
     // ✅ 자막 릴레이
     socket.on("voice:caption", ({ channelId, text, isFinal }) => {
       console.log("[CAPTION RECV]", {
@@ -178,6 +393,7 @@ function initSocket(server) {
       });
 
       emitVoiceMembers(io, cid);
+      if (typeof ack === "function") ack({ ok: true, channelId: cid });
     });
     // ✅ 마이크 음소거 상태 변경(클라가 보내는 이벤트)
     socket.on("voice:mic-muted", ({ channelId, micMuted }) => {
@@ -217,6 +433,7 @@ function initSocket(server) {
 
       // ✅ 같은 채널 사람들에게 "이 피어 나감" 알려서 WebRTC 정리
       io.to(`voice:${cid}`).emit("voice:peer-left", { peerId: socket.id });
+
       emitVoiceMembers(io, cid);
     });
 
@@ -447,6 +664,7 @@ function initSocket(server) {
           if (map.size === 0) voiceMembers.delete(cid);
         }
         io.to(`voice:${cid}`).emit("voice:peer-left", { peerId: socket.id });
+
         emitVoiceMembers(io, cid);
       }
     });

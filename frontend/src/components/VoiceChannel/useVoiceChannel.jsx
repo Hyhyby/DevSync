@@ -14,6 +14,7 @@ export default function useVoiceChannel(socket) {
   const [micMuted, setMicMuted] = useState(false);
   const [outputVolume, setOutputVolume] = useState(0.8); // 0.0 ~ 1.0
   const [inputVolume, setInputVolume] = useState(1.0);
+
   const localStreamRef = useRef(null);
   const pcsRef = useRef(new Map()); // peerId(socketId) -> RTCPeerConnection
 
@@ -22,137 +23,253 @@ export default function useVoiceChannel(socket) {
   const localVadRafRef = useRef(null);
   const localAnalyserRef = useRef(null);
   const localDataRef = useRef(null);
-  // ✅ 추가: Gain 파이프라인용 ref
+
+  // ✅ Gain 파이프라인용 ref
   const outgoingStreamRef = useRef(null); // RTC로 보낼 stream
   const micGainRef = useRef(null); // GainNode
   const micDestRef = useRef(null); // MediaStreamDestination
-  const [liveCaption, setLiveCaption] = useState(""); // 현재 말하는 중(중간결과)
-  const [finalCaption, setFinalCaption] = useState(""); // 말 끝났을 때 확정 텍스트(짧게)
-  const [remoteCaptions, setRemoteCaptions] = useState({});
-  const recognitionRef = useRef(null);
-  const captionTimerRef = useRef(null);
-  const activeVoiceChannelIdRef = useRef(null);
 
+  // ✅ 자막 상태 (서버 Whisper 결과)
+  const [liveCaption, setLiveCaption] = useState(""); // (우리는 final 위주라 거의 안 씀)
+  const [finalCaption, setFinalCaption] = useState(""); // 내 final(짧게)
+  const [remoteCaptions, setRemoteCaptions] = useState({}); // 상대들
+  const captionTimerRef = useRef(null);
+
+  const activeVoiceChannelIdRef = useRef(null);
   useEffect(() => {
     activeVoiceChannelIdRef.current = activeVoiceChannelId;
   }, [activeVoiceChannelId]);
 
-  const getSpeechRecognition = () => {
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    return SR ? new SR() : null;
-  };
+  /* =========================
+     ✅ Whisper(STT) : MediaRecorder (buffer) -> VAD end -> socket.emit("voice:audio-chunk")
+     ========================= */
+  const sttStreamRef = useRef(null);
+  const sttStreamOwnedRef = useRef(false); // ✅ 우리가 별도로 getUserMedia로 만든 stream인지
+  const mediaRecorderRef = useRef(null);
+  const sttEnabledRef = useRef(false);
 
-  const stopRecognition = useCallback(() => {
-    try {
-      if (captionTimerRef.current) clearTimeout(captionTimerRef.current);
-      captionTimerRef.current = null;
+  const sttChunksRef = useRef([]); // Blob[]
+  const silenceTimerRef = useRef(null); // setTimeout
+  const segmentTimerRef = useRef(null); // setInterval
+  const sttMimeRef = useRef("audio/webm"); // "audio/webm" or "audio/ogg"
+  const sttIntervalRef = useRef(null);
 
-      const rec = recognitionRef.current;
-      if (rec) {
-        rec.onresult = null;
-        rec.onerror = null;
-        rec.onend = null;
-        rec.stop();
-      }
-    } catch {}
-    recognitionRef.current = null;
-    setLiveCaption("");
+  const pickSupportedMimeType = useCallback(() => {
+    // 브라우저마다 지원 mime이 다를 수 있어 fallback 처리
+    const candidates = [
+      "audio/webm;codecs=opus",
+      "audio/webm",
+      "audio/ogg;codecs=opus",
+      "audio/ogg",
+    ];
+    for (const t of candidates) {
+      if (window.MediaRecorder?.isTypeSupported?.(t)) return t;
+    }
+    return ""; // 브라우저가 알아서 선택
   }, []);
 
-  const startRecognition = useCallback(
-    ({ lang = "ko-KR" } = {}) => {
-      // 중복 시작 방지
-      if (recognitionRef.current) return true;
+  const stopWhisperSTT = useCallback(() => {
+    sttEnabledRef.current = false;
 
-      const rec = getSpeechRecognition();
-      if (!rec) return false;
+    if (sttIntervalRef.current) clearInterval(sttIntervalRef.current);
+    sttIntervalRef.current = null;
 
-      rec.lang = lang;
-      rec.continuous = true;
-      rec.interimResults = true;
+    sttChunksRef.current = [];
 
-      rec.onresult = (event) => {
-        let interim = "";
-        let finalText = "";
+    try {
+      const mr = mediaRecorderRef.current;
+      if (mr && mr.state !== "inactive") mr.stop();
+    } catch {}
+    mediaRecorderRef.current = null;
 
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-          const text = event.results[i][0].transcript;
-          if (event.results[i].isFinal) finalText += text;
-          else interim += text;
-        }
+    try {
+      if (sttStreamRef.current) {
+        sttStreamRef.current.getTracks().forEach((t) => t.stop());
+      }
+    } catch {}
+    sttStreamRef.current = null;
 
-        // 🔎 interim
-        if (interim.trim()) {
-          const t = interim.trim();
-          console.log("[CAPTION EMIT][INTERIM]", {
-            cid: activeVoiceChannelIdRef.current,
-            text: t,
+    setLiveCaption("");
+    setFinalCaption("");
+  }, []);
+
+  const flushSttChunks = useCallback(async () => {
+    try {
+      if (!socket) return;
+      const cid = activeVoiceChannelIdRef.current;
+      if (!cid) return;
+
+      // 음소거면 버퍼 버리고 종료(비용 방지)
+      if (micMuted) {
+        sttChunksRef.current = [];
+        return;
+      }
+
+      const chunks = sttChunksRef.current;
+      if (!chunks.length) return;
+
+      // 한 발화(또는 한 세그먼트)로 합치기
+      const mime = sttMimeRef.current || "audio/webm";
+      const blob = new Blob(chunks, { type: mime });
+      sttChunksRef.current = [];
+
+      if (!blob || blob.size === 0) return;
+
+      const ab = await blob.arrayBuffer();
+
+      socket.emit("voice:audio-chunk", {
+        channelId: String(cid),
+        mimeType: mime,
+        audio: ab, // socket.io 바이너리 전송
+        isFinal: true, // ✅ flush 시점만 final
+      });
+    } catch (e) {
+      console.warn("[STT] flush failed:", e);
+    }
+  }, [socket, micMuted]);
+
+  const startWhisperSTT = useCallback(async () => {
+    if (!socket) return;
+    const cid = activeVoiceChannelIdRef.current;
+    if (!cid) return;
+
+    if (sttEnabledRef.current) return;
+    sttEnabledRef.current = true;
+
+    // STT 전용 stream (raw mic)
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      },
+      video: false,
+    });
+    sttStreamRef.current = stream;
+
+    const startRecorderOnce = () => {
+      if (!sttEnabledRef.current) return;
+
+      const mimeType = pickSupportedMimeType();
+      const mr = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      mediaRecorderRef.current = mr;
+      sttChunksRef.current = [];
+
+      mr.ondataavailable = (e) => {
+        if (!e.data || e.data.size === 0) return;
+        sttChunksRef.current.push(e.data);
+      };
+
+      mr.onerror = (e) => console.warn("[STT] MediaRecorder error:", e);
+
+      mr.onstop = async () => {
+        try {
+          if (!sttEnabledRef.current) return;
+          if (micMuted) return; // 비용 방지
+          if (!sttChunksRef.current.length) return;
+
+          // ✅ stop까지 모은 chunks -> 하나의 “완전한 파일 blob”
+          const blob = new Blob(sttChunksRef.current, {
+            type: mr.mimeType || "audio/webm",
           });
+          sttChunksRef.current = [];
 
-          setLiveCaption(t);
-          socket?.emit("voice:caption", {
-            channelId: activeVoiceChannelIdRef.current,
-            text: t,
-            isFinal: false,
-          });
-        }
+          const ab = await blob.arrayBuffer();
+          const u8 = new Uint8Array(ab);
 
-        // 🔎 final
-        if (finalText.trim()) {
-          const t = finalText.trim();
-          console.log("[CAPTION EMIT][FINAL]", {
-            cid: activeVoiceChannelIdRef.current,
-            text: t,
-          });
-
-          setFinalCaption(t);
-          setLiveCaption("");
-
-          socket?.emit("voice:caption", {
-            channelId: activeVoiceChannelIdRef.current,
-            text: t,
+          socket.emit("voice:audio-chunk", {
+            channelId: String(cid),
+            mimeType: mr.mimeType || "audio/webm",
+            audio: u8, // ✅ Uint8Array로 보내기(서버에서 Buffer.from 가능)
             isFinal: true,
           });
-
-          if (captionTimerRef.current) clearTimeout(captionTimerRef.current);
-          captionTimerRef.current = setTimeout(() => setFinalCaption(""), 2500);
+        } catch (err) {
+          console.warn("[STT] send failed:", err);
+        } finally {
+          // ✅ 다음 라운드 다시 시작
+          if (sttEnabledRef.current) {
+            startRecorderOnce();
+          }
         }
       };
 
-      rec.onerror = (e) => {
-        // not-allowed / no-speech / network 등 케이스가 있음
-        console.warn("[SpeechRecognition] error:", e?.error || e);
-      };
+      mr.start(); // ✅ timeslice 없이 start
+      // ✅ 2초 후 stop -> onstop에서 전송 -> 다시 start
+      // (정확도/비용 밸런스: 2000~4000ms 권장)
+      setTimeout(() => {
+        try {
+          if (mr.state !== "inactive") mr.stop();
+        } catch {}
+      }, 2500);
+    };
 
-      rec.onend = () => {
-        if (activeVoiceChannelIdRef.current) {
-          try {
-            rec.start();
-          } catch {}
-        }
-      };
+    startRecorderOnce();
+    console.log("[STT] Whisper STT started (stop/restart mode)", { cid });
+  }, [socket, pickSupportedMimeType, micMuted]);
 
-      try {
-        rec.start();
-        recognitionRef.current = rec;
-        return true;
-      } catch (e) {
-        console.warn("[SpeechRecognition] start failed:", e);
-        return false;
-      }
-    },
-    [activeVoiceChannelId]
-  );
+  // ✅ VAD 기반 "말 끝" 감지 → 800ms 무음 유지되면 flush
+  useEffect(() => {
+    if (!activeVoiceChannelIdRef.current) return;
+    if (!sttEnabledRef.current) return;
+
+    if (isSpeaking) {
+      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+      silenceTimerRef.current = null;
+      return;
+    }
+
+    if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+    silenceTimerRef.current = setTimeout(() => {
+      flushSttChunks();
+    }, 800);
+  }, [isSpeaking, flushSttChunks]);
+
+  /* =========================
+     ✅ voice:caption 수신
+     (서버가 whisper 결과를 이 이벤트로 뿌림)
+     ========================= */
   useEffect(() => {
     if (!socket) return;
+    const BLOCK_EXACT = new Set([
+      "시청해주셔서 감사합니다",
+      "시청해주셔서 감사합니다.",
+      "시청해주셔서 감사합니다!",
+      "구독과 좋아요 부탁드립니다",
+    ]);
 
+    const shouldShowCaption = (text) => {
+      const t = String(text || "").trim();
+      if (!t) return false;
+      if (t.length < 2) return false;
+      if (t.length > 140) return false;
+      if (BLOCK_EXACT.has(t)) return false;
+      return true;
+    };
     const onCaption = (p) => {
-      console.log("[CAPTION IN]", p);
+      if (!shouldShowCaption(p?.text)) {
+        return; // UI 업데이트 자체를 안 함
+      }
+      // p: { channelId, fromSocketId, fromUsername, text, isFinal, ts, ... }
 
-      if (p.fromSocketId === socket.id) return;
+      // 내 자막: fromSocketId === socket.id 일 때만 "내 자막"으로 취급
+      // (HTTP sttRoutes에서 emit할 때 fromSocketId=null이면 여기서 상대처럼 보이니,
+      //  우리는 socket기반 STT만 쓰는 전제로 유지)
+      if (p?.fromSocketId && p.fromSocketId === socket.id) {
+        if (p.isFinal && p.text?.trim()) {
+          setFinalCaption(p.text.trim());
+          setLiveCaption("");
+          if (captionTimerRef.current) clearTimeout(captionTimerRef.current);
+          captionTimerRef.current = setTimeout(() => setFinalCaption(""), 2500);
+        } else if (!p.isFinal && p.text?.trim()) {
+          setLiveCaption(p.text.trim());
+        }
+        return;
+      }
 
+      // 상대 자막
+      const key = p.fromSocketId || String(p.fromUserId || "unknown");
       setRemoteCaptions((prev) => {
-        const cur = prev[p.fromSocketId] || {
+        const cur = prev[key] || {
           username: p.fromUsername,
           live: "",
           final: "",
@@ -160,7 +277,7 @@ export default function useVoiceChannel(socket) {
         const next = { ...prev };
 
         if (p.isFinal) {
-          next[p.fromSocketId] = {
+          next[key] = {
             ...cur,
             username: p.fromUsername,
             live: "",
@@ -169,17 +286,13 @@ export default function useVoiceChannel(socket) {
 
           setTimeout(() => {
             setRemoteCaptions((pp) => {
-              const cc = pp[p.fromSocketId];
+              const cc = pp[key];
               if (!cc) return pp;
-              return { ...pp, [p.fromSocketId]: { ...cc, final: "" } };
+              return { ...pp, [key]: { ...cc, final: "" } };
             });
           }, 2500);
         } else {
-          next[p.fromSocketId] = {
-            ...cur,
-            username: p.fromUsername,
-            live: p.text,
-          };
+          next[key] = { ...cur, username: p.fromUsername, live: p.text };
         }
         return next;
       });
@@ -188,16 +301,15 @@ export default function useVoiceChannel(socket) {
     socket.on("voice:caption", onCaption);
     return () => socket.off("voice:caption", onCaption);
   }, [socket]);
-  useEffect(() => {
-    console.log("[REMOTE CAPTIONS STATE]", remoteCaptions);
-  }, [remoteCaptions]);
 
+  /* =========================
+     오디오/RTC/VAD (기존 유지)
+     ========================= */
   const ensureAudioCtx = useCallback(async () => {
     if (!audioCtxRef.current) {
       audioCtxRef.current = new (window.AudioContext ||
         window.webkitAudioContext)();
     }
-    // 웹 정책 때문에 suspended일 수 있음
     if (audioCtxRef.current.state === "suspended") {
       try {
         await audioCtxRef.current.resume();
@@ -221,12 +333,12 @@ export default function useVoiceChannel(socket) {
     localStreamRef.current = stream;
     return stream;
   }, []);
+
   // ✅ raw mic -> GainNode -> destination.stream (이 stream을 RTC에 addTrack)
   const ensureMicPipeline = useCallback(async () => {
     await ensureMic();
     await ensureAudioCtx();
 
-    // 이미 만들어져 있으면 그대로 사용
     if (outgoingStreamRef.current && micGainRef.current && micDestRef.current) {
       return outgoingStreamRef.current;
     }
@@ -238,7 +350,7 @@ export default function useVoiceChannel(socket) {
     const source = ctx.createMediaStreamSource(raw);
 
     const gain = ctx.createGain();
-    gain.gain.value = inputVolume; // ✅ 입력 볼륨 적용
+    gain.gain.value = inputVolume;
 
     const dest = ctx.createMediaStreamDestination();
 
@@ -276,21 +388,17 @@ export default function useVoiceChannel(socket) {
       const ctx = audioCtxRef.current;
       if (!ctx) return;
 
-      // 중복 방지
       if (remoteVadRef.current.has(peerId)) return;
 
       const source = ctx.createMediaStreamSource(remoteStream);
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 512;
-
       source.connect(analyser);
 
       const data = new Uint8Array(analyser.frequencyBinCount);
 
       const loop = () => {
         analyser.getByteTimeDomainData(data);
-
-        // RMS
         let sum = 0;
         for (let i = 0; i < data.length; i++) {
           const v = (data[i] - 128) / 128;
@@ -298,11 +406,10 @@ export default function useVoiceChannel(socket) {
         }
         const rms = Math.sqrt(sum / data.length);
 
-        const speaking = rms > 0.03; // 필요하면 조절
-        setRemoteSpeaking((prev) => {
-          if (prev[peerId] === speaking) return prev;
-          return { ...prev, [peerId]: speaking };
-        });
+        const speaking = rms > 0.03;
+        setRemoteSpeaking((prev) =>
+          prev[peerId] === speaking ? prev : { ...prev, [peerId]: speaking }
+        );
 
         const rafId = requestAnimationFrame(loop);
         remoteVadRef.current.set(peerId, { analyser, data, rafId });
@@ -318,7 +425,6 @@ export default function useVoiceChannel(socket) {
     const ctx = audioCtxRef.current;
     if (!ctx) return;
 
-    // 이미 돌고 있으면 패스
     if (localVadRafRef.current) return;
     if (!localStreamRef.current) return;
 
@@ -328,7 +434,6 @@ export default function useVoiceChannel(socket) {
     source.connect(analyser);
 
     const data = new Uint8Array(analyser.frequencyBinCount);
-
     localAnalyserRef.current = analyser;
     localDataRef.current = data;
 
@@ -343,47 +448,39 @@ export default function useVoiceChannel(socket) {
       const speaking = rms > 0.03;
 
       setIsSpeaking((prev) => (prev === speaking ? prev : speaking));
-
       localVadRafRef.current = requestAnimationFrame(loop);
     };
 
     loop();
   }, [ensureAudioCtx]);
-  // ✅ 추가: 마이크 트랙 on/off
+
+  // ✅ 마이크 트랙 on/off
   const applyMicMuted = useCallback((muted) => {
     const stream = localStreamRef.current;
     if (!stream) return;
-    stream.getAudioTracks().forEach((t) => {
-      t.enabled = !muted;
-    });
+    stream.getAudioTracks().forEach((t) => (t.enabled = !muted));
   }, []);
-  // ✅ 추가: 원격 오디오 엘리먼트 볼륨 적용
+
+  // ✅ 원격 오디오 엘리먼트 볼륨 적용
   const applyOutputVolume = useCallback((v) => {
     const vol = Math.max(0, Math.min(1, v));
     document.querySelectorAll('[id^="remote-audio-"]').forEach((el) => {
       el.volume = vol;
     });
   }, []);
-  // ✅ micMuted 바뀔 때 즉시 반영
+
   useEffect(() => {
     applyMicMuted(micMuted);
   }, [micMuted, applyMicMuted]);
 
   useEffect(() => {
-    if (micGainRef.current) {
-      micGainRef.current.gain.value = inputVolume;
-    }
+    if (micGainRef.current) micGainRef.current.gain.value = inputVolume;
   }, [inputVolume]);
 
-  // ✅ outputVolume 바뀔 때 즉시 반영
   useEffect(() => {
     applyOutputVolume(outputVolume);
   }, [outputVolume, applyOutputVolume]);
 
-  // createPC의 ontrack에서 remote audio 만들 때도 볼륨 적용되게 한 줄 추가
-  // (너 기존 createPC 안의 pc.ontrack 부분에서 audio 만들고 나서 아래 1줄만 추가)
-  //
-  // audio.volume = outputVolume;
   const stopLocalVAD = useCallback(() => {
     if (localVadRafRef.current) cancelAnimationFrame(localVadRafRef.current);
     localVadRafRef.current = null;
@@ -404,26 +501,21 @@ export default function useVoiceChannel(socket) {
   );
 
   const stopAll = useCallback(() => {
-    // PeerConnection 종료
     pcsRef.current.forEach((pc) => pc.close());
     pcsRef.current.clear();
 
-    // remote audio 제거
     document
       .querySelectorAll('[id^="remote-audio-"]')
       .forEach((el) => el.remove());
 
-    // remote VAD 종료
     remoteVadRef.current.forEach((obj) => {
       if (obj?.rafId) cancelAnimationFrame(obj.rafId);
     });
     remoteVadRef.current.clear();
     setRemoteSpeaking({});
 
-    // local VAD 종료
     stopLocalVAD();
 
-    // mic 종료
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach((t) => t.stop());
       localStreamRef.current = null;
@@ -458,13 +550,12 @@ export default function useVoiceChannel(socket) {
           audio.id = `remote-audio-${peerId}`;
           audio.autoplay = true;
           audio.playsInline = true;
-          // 필요하면 숨김 처리 가능
           audio.style.display = "none";
           document.body.appendChild(audio);
         }
         audio.srcObject = remoteStream;
         audio.volume = outputVolume;
-        // ✅ 상대 말하기 감지 시작
+
         startRemoteVAD(peerId, remoteStream);
       };
 
@@ -473,6 +564,7 @@ export default function useVoiceChannel(socket) {
     },
     [socket, startRemoteVAD, outputVolume]
   );
+
   useEffect(() => {
     if (!socket) return;
     if (!activeVoiceChannelId) return;
@@ -526,18 +618,15 @@ export default function useVoiceChannel(socket) {
         await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
       } else if (data.type === "ice") {
         try {
-          if (data.candidate) {
+          if (data.candidate)
             await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
-          }
         } catch (e) {
           console.warn("addIceCandidate failed:", e);
         }
       }
     };
 
-    const onPeerLeft = ({ peerId }) => {
-      closePeer(peerId);
-    };
+    const onPeerLeft = ({ peerId }) => closePeer(peerId);
 
     socket.on("voice:peers", onPeers);
     socket.on("voice:signal", onSignal);
@@ -550,16 +639,15 @@ export default function useVoiceChannel(socket) {
     };
   }, [socket, ensureMic, createPC, closePeer, startLocalVAD]);
 
-  // join/leave API
+  /* =========================
+     join/leave (WebSpeech 제거 + Whisper STT 시작/정지)
+     ========================= */
   const joinVoice = useCallback(
     async (channelId) => {
       if (!socket) return;
 
       const cid = String(channelId);
-      console.log("[JOIN VOICE]", {
-        cid,
-        socketId: socket.id,
-      });
+      console.log("[JOIN VOICE]", { cid, socketId: socket.id });
 
       await ensureMic();
       await ensureMicPipeline();
@@ -572,7 +660,12 @@ export default function useVoiceChannel(socket) {
 
       socket.emit("join-voice", { channelId: cid });
 
-      startRecognition({ lang: "ko-KR" });
+      // ✅ Whisper STT 시작 (버퍼링 + 말 끝 flush)
+      try {
+        await startWhisperSTT();
+      } catch (e) {
+        console.warn("[STT] startWhisperSTT failed:", e);
+      }
     },
     [
       socket,
@@ -582,7 +675,7 @@ export default function useVoiceChannel(socket) {
       startLocalVAD,
       applyMicMuted,
       micMuted,
-      startRecognition,
+      startWhisperSTT,
     ]
   );
 
@@ -593,12 +686,16 @@ export default function useVoiceChannel(socket) {
 
     setActiveVoiceChannelId(null);
     setMicMuted(false);
+
+    // ✅ Whisper STT 정지
+    stopWhisperSTT();
+
     stopAll();
-    stopRecognition();
+
     outgoingStreamRef.current = null;
     micGainRef.current = null;
     micDestRef.current = null;
-  }, [socket, activeVoiceChannelId, stopAll]);
+  }, [socket, activeVoiceChannelId, stopAll, stopWhisperSTT]);
 
   return {
     activeVoiceChannelId,
@@ -607,7 +704,7 @@ export default function useVoiceChannel(socket) {
     stopAll,
     localStreamRef,
     isSpeaking,
-    remoteSpeaking, // ✅ 추가
+    remoteSpeaking,
     micMuted,
     setMicMuted,
     outputVolume,

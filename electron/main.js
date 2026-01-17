@@ -17,6 +17,7 @@ const isDev = process.env.NODE_ENV === "development" || !app.isPackaged;
    ========================= */
 const getConfigPath = () => path.join(app.getPath("userData"), "config.json");
 const defaultConfig = { API_BASE: "http://localhost:5000" };
+app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
 
 function readConfig() {
   const p = getConfigPath();
@@ -179,6 +180,10 @@ function createWindow(devUrl) {
     frame: true,
     backgroundColor: "#36393f",
   });
+  // ✅ 2) UA를 Chrome처럼 바꿔서 SpeechRecognition "network" 우회 시도
+  mainWindow.webContents.setUserAgent(
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+  );
 
   if (isDev) {
     mainWindow.loadURL(devUrl || "http://localhost:3000");
@@ -236,6 +241,15 @@ app.commandLine.appendSwitch("disable-features", "OverlayScrollbar");
    4) 앱 라이프사이클
    ========================= */
 app.whenReady().then(async () => {
+  // ✅ 1) 마이크 권한 요청 자동 허용
+  app.on("web-contents-created", (_event, contents) => {
+    contents.session.setPermissionRequestHandler(
+      (_wc, permission, callback) => {
+        if (permission === "media") return callback(true);
+        callback(false);
+      }
+    );
+  });
   await startBackend();
 
   if (isDev) {
