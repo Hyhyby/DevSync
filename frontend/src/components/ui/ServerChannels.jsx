@@ -1,9 +1,75 @@
 // src/components/ui/ServerChannels.jsx
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
+import axios from "axios";
+import { API_BASE } from "../../config";
+
 import callEndIcon from "../../../assets/call_end.png";
 import micOn from "../../../assets/mic_on.png";
 import micOff from "../../../assets/mic_off.png";
 import headsetIcon from "../../../assets/headsetIcon.png";
+
+// ✅ 1) URL 변환 유틸
+const resolveUrlWithBase = (base, url) => {
+  if (!url || typeof url !== "string") return null;
+  if (url.startsWith("blob:")) return url;
+  if (url.startsWith("http://") || url.startsWith("https://")) return url;
+  if (url.startsWith("/")) return `${base}${url}`;
+  return `${base}/${url}`;
+};
+
+// ✅ 2) BlobImage (ngrok 헤더 포함해서 blob으로 로딩)
+const BlobImage = ({ url, alt, className = "", fallback = null }) => {
+  const [blobUrl, setBlobUrl] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    let created = "";
+
+    if (!url) {
+      setBlobUrl("");
+      return;
+    }
+
+    // 이미 blob URL이면 그대로 사용
+    if (url.startsWith("blob:")) {
+      setBlobUrl(url);
+      return;
+    }
+
+    (async () => {
+      try {
+        setLoading(true);
+        const res = await axios.get(url, {
+          responseType: "blob",
+          headers: { "ngrok-skip-browser-warning": "true" },
+        });
+
+        created = URL.createObjectURL(res.data);
+        if (!alive) return;
+        setBlobUrl(created);
+      } catch (e) {
+        if (alive) setBlobUrl("");
+        // 필요하면 여기서 console.warn 찍어도 됨
+        // console.warn("BLOB_IMAGE_LOAD_FAIL", url, e?.message || e);
+      } finally {
+        if (alive) setLoading(false);
+      }
+    })();
+
+    return () => {
+      alive = false;
+      if (created) URL.revokeObjectURL(created);
+    };
+  }, [url]);
+
+  // 로딩 중엔 fallback(이니셜) 유지
+  if (loading) return fallback;
+  if (!blobUrl) return fallback;
+
+  return <img src={blobUrl} alt={alt} className={className} loading="lazy" />;
+};
+
 const ServerChannels = ({
   textChannels,
   voiceChannels,
@@ -12,7 +78,7 @@ const ServerChannels = ({
   voiceMembersByChannel,
   currentUserId,
   isSpeaking,
-  remoteSpeaking, // ✅ 추가
+  remoteSpeaking,
   micMuted,
   onToggleMic,
   outputVolume,
@@ -152,24 +218,47 @@ const ServerChannels = ({
                           ? !!isSpeaking
                           : !!remoteSpeaking?.[String(m.socketId)];
 
+                        const initial = (m.username || "?")
+                          .charAt(0)
+                          .toUpperCase();
+
+                        // ✅ profileImage -> absolute URL
+                        const profileUrl = resolveUrlWithBase(
+                          API_BASE,
+                          m.profileImage,
+                        );
+
                         return (
                           <div
                             key={m.socketId || m.userId}
                             className="flex items-center gap-2 px-2 py-1 rounded hover:bg-neutral-800/40"
                           >
-                            {/* ✅ 아바타 링 */}
+                            {/* ✅ 아바타 (blob) */}
                             <div
-                              className={`w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-semibold text-white
+                              className={`w-6 h-6 rounded-full relative overflow-hidden flex items-center justify-center
+                                text-[11px] font-semibold text-white flex-shrink-0
                                 ${speaking ? "ring-2 ring-green-500" : ""}
                               `}
                               style={{ backgroundColor: "#5865F2" }}
+                              title={m.username}
                             >
-                              {(m.username || "?").charAt(0).toUpperCase()}
+                              {profileUrl ? (
+                                <BlobImage
+                                  url={profileUrl}
+                                  alt={m.username || "user"}
+                                  className="absolute inset-0 w-full h-full object-cover"
+                                  fallback={<span>{initial}</span>}
+                                />
+                              ) : (
+                                <span>{initial}</span>
+                              )}
                             </div>
 
                             <div className="flex-1 text-[12px] text-gray-200 truncate">
                               {m.username}
                             </div>
+
+                            {/* 마이크 꺼짐 아이콘 */}
                             {m.micMuted && (
                               <img
                                 src={micOff}
@@ -179,6 +268,8 @@ const ServerChannels = ({
                                 draggable={false}
                               />
                             )}
+
+                            {/* 본인일 때 나가기 버튼 */}
                             {isMe && (
                               <button
                                 type="button"
@@ -188,10 +279,9 @@ const ServerChannels = ({
                                   onLeaveVoice?.(ch.id);
                                 }}
                                 className="w-7 h-7 flex items-center justify-center rounded-full
-           bg-netural-700 hover:bg-netural-600
-           transition transform hover:scale-105 active:scale-95"
+                                  bg-neutral-700 hover:bg-neutral-600
+                                  transition transform hover:scale-105 active:scale-95"
                               >
-                                {/* 너가 바꾼 call_end 아이콘 쓰는 자리 */}
                                 <img
                                   src={callEndIcon}
                                   alt="leave voice"
@@ -230,6 +320,7 @@ const ServerChannels = ({
           </button>
         </div>
       )}
+
       {/* ✅ 음성 채널 컨트롤 (하단) */}
       {activeVoiceChannelId && (
         <div className="mt-auto p-3 border-t border-neutral-800 bg-[#0f1115]">
@@ -252,45 +343,57 @@ const ServerChannels = ({
               <img src={micMuted ? micOff : micOn} className="w-6 h-6" alt="" />
             </button>
 
-            <div className="flex-1 space-y-3">
-              {/* 🎧 듣는 소리(출력) */}
-              <div className="flex items-center gap-2">
+            {/* 볼륨 슬라이더 그룹 */}
+            <div className="flex-1 flex flex-col justify-center gap-[6px] px-1">
+              {/* 🎧 출력 볼륨 */}
+              <div className="flex items-center gap-2 group">
                 <img
-                  src={headsetIcon /* 너 아이콘 */}
-                  className="w-4 h-4 opacity-80"
-                  alt=""
+                  src={headsetIcon}
+                  className="w-3.5 h-3.5 opacity-50"
+                  alt="out"
                 />
-                <input
-                  type="range"
-                  min={0}
-                  max={100}
-                  value={Math.round((outputVolume ?? 0.8) * 100)}
-                  onChange={(e) =>
-                    onChangeOutputVolume?.(Number(e.target.value) / 100)
-                  }
-                  className="w-full accent-gray-300"
-                />
-                <span className="w-10 text-right text-[11px] text-gray-400 tabular-nums">
-                  {Math.round((outputVolume ?? 0.8) * 100)}%
-                </span>
+                <div className="relative flex-1 h-1 bg-[#404249] rounded-full">
+                  <div
+                    className="absolute top-0 left-0 h-full bg-indigo-400 rounded-full"
+                    style={{ width: `${(outputVolume ?? 0.8) * 100}%` }}
+                  />
+                  <input
+                    type="range"
+                    min={0}
+                    max={100}
+                    value={Math.round((outputVolume ?? 0.8) * 100)}
+                    onChange={(e) =>
+                      onChangeOutputVolume?.(Number(e.target.value) / 100)
+                    }
+                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                  />
+                </div>
               </div>
 
-              {/* 🎙️ 보내는 소리(입력) */}
-              <div className="flex items-center gap-2">
-                <img src={micOn} className="w-4 h-4 opacity-80" alt="" />
-                <input
-                  type="range"
-                  min={0}
-                  max={200} // ✅ 0~200% (2.0)
-                  value={Math.round((inputVolume ?? 1.0) * 100)}
-                  onChange={(e) =>
-                    onChangeInputVolume?.(Number(e.target.value) / 100)
-                  }
-                  className="w-full accent-gray-300"
-                />
-                <span className="w-10 text-right text-[11px] text-gray-400 tabular-nums">
-                  {Math.round((inputVolume ?? 1.0) * 100)}%
-                </span>
+              {/* 🎙️ 입력 볼륨 */}
+              <div className="flex items-center gap-2 group">
+                <img src={micOn} className="w-3.5 h-3.5 opacity-50" alt="in" />
+                <div className="relative flex-1 h-1 bg-[#404249] rounded-full">
+                  <div
+                    className="absolute top-0 left-0 h-full bg-green-500 rounded-full"
+                    style={{
+                      width: `${Math.min(
+                        ((inputVolume ?? 1.0) / 2) * 100,
+                        100,
+                      )}%`,
+                    }} // 200% max 기준
+                  />
+                  <input
+                    type="range"
+                    min={0}
+                    max={200}
+                    value={Math.round((inputVolume ?? 1.0) * 100)}
+                    onChange={(e) =>
+                      onChangeInputVolume?.(Number(e.target.value) / 100)
+                    }
+                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                  />
+                </div>
               </div>
             </div>
           </div>

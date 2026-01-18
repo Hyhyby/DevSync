@@ -1,6 +1,86 @@
 // src/components/Home/ui/FriendsSidebar.jsx
 import React, { useRef, useState, useEffect, useMemo } from "react";
-import { API_BASE } from "../../config"; // ✅ 경로가 다르면 맞춰줘 (예: ../../config)
+import axios from "axios";
+import { API_BASE } from "../../config";
+
+// ✅ 상대경로(/api..., /uploads...) → 절대경로(API_BASE + ...)로 변환
+const resolveUrlWithBase = (base, url) => {
+  if (!url || typeof url !== "string") return null;
+
+  // blob/objectURL은 그대로
+  if (url.startsWith("blob:")) return url;
+
+  // 이미 절대경로면 그대로
+  if (url.startsWith("http://") || url.startsWith("https://")) return url;
+
+  // /로 시작하면 base 붙이기
+  if (url.startsWith("/")) return `${base}${url}`;
+
+  // 그 외도 base 붙이기
+  return `${base}/${url}`;
+};
+
+// ✅ ngrok 우회: url을 axios로 blob 받아서 blob: URL로 바꿔서 <img>에 사용
+const BlobImage = ({ url, alt, className = "", fallback = null, onError }) => {
+  const [blobUrl, setBlobUrl] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    let created = "";
+
+    // url이 없으면 초기화
+    if (!url) {
+      setBlobUrl("");
+      return;
+    }
+
+    // blob: 이면 그대로 쓰기 (로컬 미리보기)
+    if (url.startsWith("blob:")) {
+      setBlobUrl(url);
+      return;
+    }
+
+    (async () => {
+      try {
+        setLoading(true);
+
+        const res = await axios.get(url, {
+          responseType: "blob",
+          headers: { "ngrok-skip-browser-warning": "true" },
+          // 필요하면 withCredentials: true,
+        });
+
+        created = URL.createObjectURL(res.data);
+        if (!alive) return;
+        setBlobUrl(created);
+      } catch (e) {
+        console.error("BLOB_IMG_LOAD_ERR", url, e);
+        if (alive) setBlobUrl("");
+        onError?.(e);
+      } finally {
+        if (alive) setLoading(false);
+      }
+    })();
+
+    return () => {
+      alive = false;
+      // 우리가 만든 objectURL만 revoke (blob: 미리보기는 revoke하면 안 됨)
+      if (created) URL.revokeObjectURL(created);
+    };
+  }, [url, onError]);
+
+  if (loading) {
+    // 로딩 UI 필요하면 바꿔도 됨
+    return <div className="absolute inset-0 bg-black/20 animate-pulse" />;
+  }
+
+  if (!blobUrl) {
+    return fallback;
+  }
+
+  return <img src={blobUrl} alt={alt} className={className} loading="lazy" />;
+};
 
 const FriendsSidebar = ({
   user,
@@ -15,55 +95,36 @@ const FriendsSidebar = ({
 }) => {
   const fileInputRef = useRef(null);
 
-  // previewImage에는 "로컬 objectURL" 또는 "서버 이미지 URL" 둘 다 들어갈 수 있음
-  const [previewImage, setPreviewImage] = useState(null);
+  // ✅ 업로드 직후에는 로컬 미리보기를 즉시 보여주기 위한 상태
+  // (서버 저장된 URL은 user.profileImage로 들어오고, 여긴 "임시 미리보기" 용)
+  const [localPreview, setLocalPreview] = useState(null);
+  const localPreviewRef = useRef(null);
 
-  // ✅ objectURL 메모리 누수 방지용
-  const objectUrlRef = useRef(null);
-
-  // ✅ 상대경로(/uploads/...) → 절대경로(API_BASE + ...)로 변환
-  const resolveImageUrl = useMemo(() => {
-    return (url) => {
-      if (!url) return null;
-      if (typeof url !== "string") return null;
-
-      // 이미 blob/objectURL이거나 http(s)면 그대로
-      if (url.startsWith("blob:")) return url;
-      if (url.startsWith("http://") || url.startsWith("https://")) return url;
-
-      // "/uploads/..." 같은 상대경로면 API_BASE 붙이기
-      if (url.startsWith("/")) return `${API_BASE}${url}`;
-
-      // 그 외(상대경로)도 일단 붙여줌
-      return `${API_BASE}/${url}`;
-    };
-  }, []);
-  useEffect(() => {
-    const resolved = resolveImageUrl(user?.profileImage);
+  // ✅ user.profileImage를 절대 URL로 변환
+  const profileUrl = useMemo(() => {
+    const resolved = resolveUrlWithBase(API_BASE, user?.profileImage);
     console.log("🖼️ PROFILE IMAGE URL =", resolved);
-    setPreviewImage(resolved);
-  }, [user, resolveImageUrl]);
-  console.log("API_BASE =", API_BASE);
-  console.log("resolved profile =", resolveImageUrl(user?.profileImage));
+    return resolved;
+  }, [user?.profileImage]);
 
-  // ✅ user 변경 시 서버에 저장된 프로필 이미지 반영
+  // ✅ 업로드 성공 후 user.profileImage가 들어오면 로컬 미리보기는 정리
   useEffect(() => {
-    // 기존 objectURL 정리
-    if (objectUrlRef.current) {
-      URL.revokeObjectURL(objectUrlRef.current);
-      objectUrlRef.current = null;
+    if (user?.profileImage) {
+      // 서버 URL이 생겼으니 로컬 미리보기 제거
+      if (localPreviewRef.current) {
+        URL.revokeObjectURL(localPreviewRef.current);
+        localPreviewRef.current = null;
+      }
+      setLocalPreview(null);
     }
+  }, [user?.profileImage]);
 
-    const next = resolveImageUrl(user?.profileImage);
-    setPreviewImage(next);
-  }, [user, resolveImageUrl]);
-
-  // 컴포넌트 언마운트 시 objectURL 정리
+  // 언마운트 시 로컬 미리보기 objectURL 정리
   useEffect(() => {
     return () => {
-      if (objectUrlRef.current) {
-        URL.revokeObjectURL(objectUrlRef.current);
-        objectUrlRef.current = null;
+      if (localPreviewRef.current) {
+        URL.revokeObjectURL(localPreviewRef.current);
+        localPreviewRef.current = null;
       }
     };
   }, []);
@@ -76,23 +137,26 @@ const FriendsSidebar = ({
     const file = e.target.files?.[0];
     if (!file) return;
 
-    // ✅ 기존 objectURL 정리
-    if (objectUrlRef.current) {
-      URL.revokeObjectURL(objectUrlRef.current);
-      objectUrlRef.current = null;
+    // 기존 로컬 미리보기 objectURL 제거
+    if (localPreviewRef.current) {
+      URL.revokeObjectURL(localPreviewRef.current);
+      localPreviewRef.current = null;
     }
 
-    // 1) 즉시 미리보기
+    // 1) 즉시 로컬 미리보기
     const objectUrl = URL.createObjectURL(file);
-    objectUrlRef.current = objectUrl;
-    setPreviewImage(objectUrl);
+    localPreviewRef.current = objectUrl;
+    setLocalPreview(objectUrl);
 
-    // 2) 실제 업로드(부모에서 처리)
+    // 2) 실제 업로드 (부모에서 처리)
     onUploadProfileImage?.(file);
 
-    // 같은 파일 다시 선택해도 onChange가 뜨게 초기화
     e.target.value = "";
   };
+
+  // ✅ 화면에 보여줄 최종 프로필 소스
+  // 로컬 미리보기가 있으면 그걸 우선, 없으면 서버 URL
+  const displayProfileUrl = localPreview || profileUrl;
 
   return (
     <aside className="w-64 bg-neutral-900 flex flex-col border-r border-neutral-800">
@@ -112,7 +176,6 @@ const FriendsSidebar = ({
             type="file"
             ref={fileInputRef}
             onChange={handleFileChange}
-            // ✅ PNG만 고집하면 유지해도 됨. 일반적으로는 image/* 추천
             accept="image/*"
             className="hidden"
           />
@@ -122,11 +185,15 @@ const FriendsSidebar = ({
             className="w-16 h-16 rounded-full bg-neutral-700 flex items-center justify-center overflow-hidden cursor-pointer border-2 border-transparent group-hover:border-yellow-400 transition-all relative"
             title="Click to change profile image"
           >
-            {previewImage ? (
-              <img
-                src={previewImage}
+            {displayProfileUrl ? (
+              <BlobImage
+                url={displayProfileUrl}
                 alt="Profile"
                 className="absolute inset-0 w-full h-full object-cover block"
+                fallback={<span className="text-gray-400 text-sm">IMG</span>}
+                onError={() => {
+                  console.log("❌ PROFILE IMG ERROR", displayProfileUrl);
+                }}
               />
             ) : (
               <span className="text-gray-400 text-sm">IMG</span>
@@ -176,7 +243,10 @@ const FriendsSidebar = ({
             </div>
           ) : (
             friends.map((friend) => {
-              const friendImg = resolveImageUrl(friend.profileImage);
+              const friendAbs = resolveUrlWithBase(
+                API_BASE,
+                friend.profileImage,
+              );
 
               return (
                 <button
@@ -186,11 +256,16 @@ const FriendsSidebar = ({
                 >
                   <div className="flex items-center gap-3">
                     <div className="w-8 h-8 rounded-full bg-neutral-700 flex items-center justify-center text-[11px] text-gray-300 overflow-hidden relative">
-                      {friendImg ? (
-                        <img
-                          src={friendImg}
+                      {friendAbs ? (
+                        <BlobImage
+                          url={friendAbs}
                           alt={friend.username}
                           className="absolute inset-0 w-full h-full object-cover block"
+                          fallback={
+                            <span>
+                              {friend.username?.[0]?.toUpperCase() || "?"}
+                            </span>
+                          }
                         />
                       ) : (
                         friend.username?.[0]?.toUpperCase() || "?"

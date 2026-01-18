@@ -4,7 +4,49 @@ const { authenticateToken } = require("../middleware/auth");
 const pool = require("../config/db");
 
 const router = express.Router();
+/* ============================================================
+   2-1. DM 참가자 목록 (프로필 포함)
+   GET /api/dms/:dmId/participants
+============================================================ */
+router.get("/:dmId/participants", authenticateToken, async (req, res) => {
+  const myId = req.user.userId;
+  const { dmId } = req.params;
 
+  try {
+    // 내가 이 DM의 참가자인지 확인
+    const auth = await pool.query(
+      `
+      SELECT 1
+      FROM dm_participants
+      WHERE dm_id = $1 AND user_id = $2
+      `,
+      [dmId, myId],
+    );
+
+    if (auth.rowCount === 0) {
+      return res.status(403).json({ error: "권한 없음" });
+    }
+
+    // 참가자 + 프로필 이미지
+    const result = await pool.query(
+      `
+      SELECT
+        u.id        AS "userId",
+        u.username  AS "username",
+        u.profile_image_url AS "profileImage"
+      FROM dm_participants dp
+      JOIN users u ON u.id = dp.user_id
+      WHERE dp.dm_id = $1
+      `,
+      [dmId],
+    );
+
+    res.json(result.rows);
+  } catch (err) {
+    console.error("GET_DM_PARTICIPANTS_ERROR", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
 /* ============================================================
    1. DM 방 생성 (이미 있으면 기존 방 반환)
    POST /api/dms  { targetUserId }
@@ -32,7 +74,7 @@ router.post("/", authenticateToken, async (req, res) => {
       HAVING ARRAY_AGG(dp.user_id ORDER BY dp.user_id)
            = ARRAY(SELECT unnest($1::int[]) ORDER BY 1)
       `,
-      [[myId, targetUserId]]
+      [[myId, targetUserId]],
     );
 
     // 있으면 그 방 그대로 사용
@@ -48,7 +90,7 @@ router.post("/", authenticateToken, async (req, res) => {
       `
       INSERT INTO dms DEFAULT VALUES
       RETURNING id
-      `
+      `,
     );
     const newDmId = create.rows[0].id;
 
@@ -58,7 +100,7 @@ router.post("/", authenticateToken, async (req, res) => {
       INSERT INTO dm_participants (dm_id, user_id)
       VALUES ($1, $2), ($1, $3)
       `,
-      [newDmId, myId, targetUserId]
+      [newDmId, myId, targetUserId],
     );
 
     await client.query("COMMIT");
@@ -102,7 +144,7 @@ router.get("/", authenticateToken, async (req, res) => {
       WHERE dp.user_id = $1
       ORDER BY d.updated_at DESC
       `,
-      [myId]
+      [myId],
     );
 
     res.json(result.rows);
@@ -129,7 +171,7 @@ router.get("/:dmId/messages", authenticateToken, async (req, res) => {
       WHERE dm_id = $1
         AND user_id = $2
       `,
-      [dmId, myId]
+      [dmId, myId],
     );
 
     if (auth.rowCount === 0) {
@@ -150,7 +192,7 @@ router.get("/:dmId/messages", authenticateToken, async (req, res) => {
       WHERE m.dm_id = $1
       ORDER BY m.created_at ASC
       `,
-      [dmId]
+      [dmId],
     );
 
     res.json(result.rows);

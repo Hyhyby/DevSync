@@ -21,14 +21,10 @@ function mapServer(row) {
   };
 }
 
-/**
- * 📌 서버 생성 (기본 채널 생성 포함)
- * POST /api/servers
- * body: { name, iconUrl }
- */
 router.post("/", authenticateToken, async (req, res) => {
-  const userId = req.user.userId;
+  const userId = req.user.userId; // number
   const { name, iconUrl } = req.body || {};
+  console.log("userId =", userId, "type =", typeof userId);
 
   if (!name || !name.trim()) {
     return res.status(400).json({ error: "Server name is required" });
@@ -38,17 +34,18 @@ router.post("/", authenticateToken, async (req, res) => {
   try {
     await client.query("BEGIN");
 
-    const serverId = uuidv4();
-
-    // 1) servers 생성
+    // 1) servers 생성 (id는 DB에서 자동 생성된다고 가정)
     const serverRes = await client.query(
       `
-      INSERT INTO servers (id, name, owner_id, icon_url)
-      VALUES ($1, $2, $3, $4)
+      INSERT INTO servers (name, owner_id, icon_url)
+      VALUES ($1, $2, $3)
       RETURNING id, name, owner_id, icon_url, created_at
       `,
-      [serverId, name.trim(), userId, iconUrl || null]
+      [name.trim(), userId, iconUrl || null],
     );
+
+    // ✅ 여기서 serverId를 꺼내야 함
+    const serverId = serverRes.rows[0].id;
 
     // 2) server_members에 owner 추가
     await client.query(
@@ -56,10 +53,10 @@ router.post("/", authenticateToken, async (req, res) => {
       INSERT INTO server_members (server_id, user_id, role)
       VALUES ($1, $2, 'owner')
       `,
-      [serverId, userId]
+      [serverId, userId],
     );
 
-    // 3) 기본 채널 생성 (#일반, 일반 음성 채널)
+    // 3) 기본 채널 생성
     await client.query(
       `
       INSERT INTO server_channels (server_id, name, type, position, topic)
@@ -67,12 +64,11 @@ router.post("/", authenticateToken, async (req, res) => {
         ($1, '일반', 'text', 0, ''),
         ($1, '일반 음성 채널', 'voice', 0, '')
       `,
-      [serverId]
+      [serverId],
     );
 
     await client.query("COMMIT");
 
-    // mapServer는 icon_url 키를 기대하니까 shape 맞춰서 반환
     const row = serverRes.rows[0];
     return res.status(201).json({
       id: row.id,
@@ -110,7 +106,7 @@ router.get("/", authenticateToken, async (req, res) => {
       WHERE sm.user_id = $1
       ORDER BY s.created_at ASC
       `,
-      [userId]
+      [userId],
     );
 
     return res.json(result.rows.map(mapServer));
@@ -140,7 +136,7 @@ router.get("/:serverId", authenticateToken, async (req, res) => {
       WHERE s.id = $1
         AND sm.user_id = $2
       `,
-      [serverId, userId]
+      [serverId, userId],
     );
 
     if (result.rowCount === 0) {
@@ -172,7 +168,7 @@ router.get("/:serverId/members", authenticateToken, async (req, res) => {
       FROM server_members
       WHERE server_id = $1 AND user_id = $2
       `,
-      [serverId, userId]
+      [serverId, userId],
     );
 
     if (check.rowCount === 0) {
@@ -197,7 +193,7 @@ router.get("/:serverId/members", authenticateToken, async (req, res) => {
         CASE WHEN sm.role = 'owner' THEN 0 ELSE 1 END,
         u.username ASC
       `,
-      [serverId]
+      [serverId],
     );
 
     const members = result.rows.map((row) => ({
@@ -228,7 +224,7 @@ router.patch("/:serverId", authenticateToken, async (req, res) => {
     // Owner 확인
     const check = await pool.query(
       `SELECT owner_id FROM servers WHERE id = $1`,
-      [serverId]
+      [serverId],
     );
 
     if (check.rowCount === 0)
@@ -266,7 +262,7 @@ router.patch("/:serverId", authenticateToken, async (req, res) => {
        WHERE id = $${idx}
        RETURNING id, name, icon_url, owner_id, created_at
       `,
-      values
+      values,
     );
 
     return res.json(mapServer(result.rows[0]));
@@ -287,7 +283,7 @@ router.delete("/:serverId", authenticateToken, async (req, res) => {
   try {
     const check = await pool.query(
       `SELECT owner_id FROM servers WHERE id = $1`,
-      [serverId]
+      [serverId],
     );
 
     if (check.rowCount === 0)
@@ -317,7 +313,7 @@ router.post("/:serverId/leave", authenticateToken, async (req, res) => {
     // 서버 존재 여부 및 소유자 확인
     const serverCheck = await pool.query(
       `SELECT owner_id FROM servers WHERE id = $1`,
-      [serverId]
+      [serverId],
     );
 
     if (serverCheck.rowCount === 0) {
@@ -335,7 +331,7 @@ router.post("/:serverId/leave", authenticateToken, async (req, res) => {
     // 멤버 삭제 (나가기 처리)
     const result = await pool.query(
       `DELETE FROM server_members WHERE server_id = $1 AND user_id = $2`,
-      [serverId, userId]
+      [serverId, userId],
     );
 
     if (result.rowCount === 0) {
@@ -348,7 +344,7 @@ router.post("/:serverId/leave", authenticateToken, async (req, res) => {
 
       const memberIdsRes = await pool.query(
         `SELECT user_id FROM server_members WHERE server_id = $1`,
-        [serverId]
+        [serverId],
       );
 
       const payload = { serverId, leftUserId: userId };

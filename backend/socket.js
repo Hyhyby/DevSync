@@ -74,7 +74,7 @@ function shouldEmitCaption(text) {
 function startSttSession(socketId) {
   const webmPath = path.join(
     os.tmpdir(),
-    `devsync-stt-${socketId}-${Date.now()}.webm`
+    `devsync-stt-${socketId}-${Date.now()}.webm`,
   );
   const s = { webmPath, startedAt: Date.now() };
   sttSessions.set(socketId, s);
@@ -142,7 +142,7 @@ function extFromMime(mime) {
 async function transcribeBufferWithWhisper(
   buffer,
   mimeType,
-  { language = "ko" } = {}
+  { language = "ko" } = {},
 ) {
   const mime = normalizeMime(mimeType);
   const ext = extFromMime(mime);
@@ -349,7 +349,7 @@ function initSocket(server) {
       io.to(`voice:${cid}`).emit("voice:caption", payload);
     });
 
-    socket.on("join-voice", ({ channelId }) => {
+    socket.on("join-voice", async ({ channelId }) => {
       console.log("[JOIN-VOICE RECV]", { socketId: socket.id, channelId });
       if (!channelId) return;
       const cid = String(channelId);
@@ -383,13 +383,23 @@ function initSocket(server) {
       // ✅ join 직전, 기존 피어 목록을 joiner에게 전달
       const peers = Array.from(map.keys()).filter((sid) => sid !== socket.id);
       socket.emit("voice:peers", { channelId: cid, peers });
-
+      let profileImage = null;
+      try {
+        const uRes = await pool.query(
+          "SELECT profile_image_url FROM users WHERE id = $1",
+          [userId],
+        );
+        profileImage = uRes.rows?.[0]?.profile_image_url || null;
+      } catch (e) {
+        console.warn("[VOICE] profile image load failed", e?.message || e);
+      }
       // ✅ 멤버 등록(이제 socketId 포함)
       map.set(socket.id, {
         socketId: socket.id,
         userId,
         username,
         micMuted: false,
+        profileImage,
       });
 
       emitVoiceMembers(io, cid);
@@ -475,7 +485,7 @@ function initSocket(server) {
           FROM dm_participants
           WHERE dm_id = $1 AND user_id = $2
           `,
-          [dmId, userId]
+          [dmId, userId],
         );
         if (auth.rowCount === 0) return;
 
@@ -485,7 +495,7 @@ function initSocket(server) {
           VALUES ($1, $2, $3)
           RETURNING id, dm_id, user_id, content, created_at
           `,
-          [dmId, userId, text]
+          [dmId, userId, text],
         );
 
         const msgRow = result.rows[0];
@@ -495,7 +505,7 @@ function initSocket(server) {
           UPDATE dms SET updated_at = NOW()
           WHERE id = $1
           `,
-          [dmId]
+          [dmId],
         );
 
         io.to(`dm_${dmId}`).emit("receive-dm", {
@@ -549,14 +559,14 @@ function initSocket(server) {
         // (권장) 서버 멤버인지 검증
         const mem = await pool.query(
           `SELECT 1 FROM server_members WHERE server_id = $1 AND user_id = $2`,
-          [sid, userId]
+          [sid, userId],
         );
         if (mem.rowCount === 0) return;
 
         // (권장) 채널이 해당 서버 소속인지 검증
         const ch = await pool.query(
           `SELECT 1 FROM server_channels WHERE id = $1 AND server_id = $2`,
-          [channelId, sid]
+          [channelId, sid],
         );
         if (ch.rowCount === 0) return;
 
@@ -567,7 +577,7 @@ function initSocket(server) {
       VALUES ($1, $2, $3, $4)
       RETURNING id, content, created_at
       `,
-          [sid, channelId, userId, text]
+          [sid, channelId, userId, text],
         );
 
         const row = saved.rows[0];
@@ -624,7 +634,7 @@ function initSocket(server) {
           VALUES ($1, $2, $3, $4)
           RETURNING id, content, created_at
           `,
-          [sid, channelId, BOT_USER_ID, reply]
+          [sid, channelId, BOT_USER_ID, reply],
         );
 
         const botRow = savedBot.rows[0];
@@ -709,7 +719,7 @@ async function loadRecentChannelHistory({ serverId, channelId, limit = 40 }) {
     ORDER BY m.id DESC
     LIMIT $3
     `,
-    [serverId, channelId, limit]
+    [serverId, channelId, limit],
   );
 
   // 오래된 → 최신 순으로

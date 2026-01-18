@@ -1,10 +1,71 @@
 // src/components/ui/DirectMessageUI.jsx
-import React from "react";
+import React, { useEffect, useMemo, useState } from "react";
+import axios from "axios";
+import { API_BASE } from "../../config";
+
+// ✅ ngrok 헤더 포함해서 이미지 blob으로 로딩 → objectURL로 표시
+const AvatarImage = ({ url, alt, className }) => {
+  const [blobUrl, setBlobUrl] = useState("");
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    let created = "";
+
+    // url 없으면 초기화
+    if (!url) {
+      setBlobUrl("");
+      setFailed(false);
+      return;
+    }
+
+    (async () => {
+      try {
+        setFailed(false);
+
+        const res = await axios.get(url, {
+          responseType: "blob",
+          headers: { "ngrok-skip-browser-warning": "true" },
+        });
+
+        created = URL.createObjectURL(res.data);
+        if (!alive) return;
+        setBlobUrl(created);
+      } catch (e) {
+        console.error("DM_AVATAR_LOAD_ERR", url, e?.message || e);
+        if (!alive) return;
+        setFailed(true);
+        setBlobUrl("");
+      }
+    })();
+
+    return () => {
+      alive = false;
+      if (created) URL.revokeObjectURL(created);
+    };
+  }, [url]);
+
+  if (!url || failed || !blobUrl) return null;
+
+  return (
+    <img
+      src={blobUrl}
+      alt={alt}
+      className={className}
+      loading="lazy"
+      draggable={false}
+    />
+  );
+};
 
 const DirectMessageUI = ({
   dmId,
   partnerName,
   myUsername,
+  // ✅ 추가: 컨테이너에서 내려주기
+  myProfileImage,
+  partnerProfileImage,
+
   messages,
   input,
   onChangeInput,
@@ -13,20 +74,40 @@ const DirectMessageUI = ({
   messagesWrapRef,
   messagesEndRef,
 }) => {
-  if (!dmId) {
-    // 보통 여기까지 오기 전에 DirectMessage 컨테이너에서 걸러지지만
-    // 방어용으로 한 번 더
-    return null;
-  }
+  if (!dmId) return null;
+
+  // ✅ "/api/..." 또는 "/uploads/..." 같은 상대경로면 API_BASE 붙여서 절대 URL로
+  const resolveUrl = useMemo(() => {
+    return (u) => {
+      if (!u || typeof u !== "string") return null;
+      if (u.startsWith("blob:")) return u;
+      if (u.startsWith("http://") || u.startsWith("https://")) return u;
+      if (u.startsWith("/")) return `${API_BASE}${u}`;
+      return `${API_BASE}/${u}`;
+    };
+  }, []);
+
+  const myAvatarUrl = resolveUrl(myProfileImage);
+  const partnerAvatarUrl = resolveUrl(partnerProfileImage);
+
+  const partnerInitial = partnerName?.charAt(0)?.toUpperCase() || "?";
+  const myInitial = myUsername?.charAt(0)?.toUpperCase() || "?";
 
   return (
     <div className="w-screen h-screen bg-[#050608] flex flex-col text-white">
       {/* 헤더 */}
       <header className="h-12 px-4 flex items-center justify-between border-b border-[#202225] bg-[#18191c]">
         <div className="flex items-center gap-2">
-          <div className="w-7 h-7 rounded-full bg-discord-blurple flex items-center justify-center text-sm font-semibold">
-            {partnerName?.charAt(0)?.toUpperCase() || "?"}
+          {/* ✅ 상대 아바타: 이미지 있으면 이미지, 없으면 이니셜 */}
+          <div className="w-7 h-7 rounded-full bg-discord-blurple overflow-hidden flex items-center justify-center text-sm font-semibold relative">
+            <AvatarImage
+              url={partnerAvatarUrl}
+              alt={partnerName || "partner"}
+              className="absolute inset-0 w-full h-full object-cover"
+            />
+            {!partnerAvatarUrl && partnerInitial}
           </div>
+
           <div className="flex flex-col">
             <span className="text-sm font-semibold">{partnerName}</span>
             <span className="text-[11px] text-gray-400">Direct Message</span>
@@ -34,7 +115,21 @@ const DirectMessageUI = ({
         </div>
 
         {myUsername && (
-          <div className="text-xs text-gray-400">Logged in as {myUsername}</div>
+          <div className="flex items-center gap-2">
+            {/* ✅ 내 아바타도 헤더에서 같이 보여주고 싶으면 */}
+            <div className="w-6 h-6 rounded-full bg-slate-600 overflow-hidden flex items-center justify-center text-[11px] font-semibold relative">
+              <AvatarImage
+                url={myAvatarUrl}
+                alt={myUsername || "me"}
+                className="absolute inset-0 w-full h-full object-cover"
+              />
+              {!myAvatarUrl && myInitial}
+            </div>
+
+            <div className="text-xs text-gray-400">
+              Logged in as {myUsername}
+            </div>
+          </div>
         )}
       </header>
 
@@ -57,10 +152,16 @@ const DirectMessageUI = ({
                   isOwn ? "justify-end" : "justify-start"
                 } gap-3`}
               >
-                {/* 상대방 아바타 */}
+                {/* 상대 아바타 */}
                 {!isOwn && (
-                  <div className="w-8 h-8 bg-discord-blurple rounded-full flex items-center justify-center text-white text-sm font-semibold">
-                    {initial}
+                  <div className="w-8 h-8 bg-discord-blurple rounded-full overflow-hidden flex items-center justify-center text-white text-sm font-semibold relative">
+                    {/* ✅ 상대 메시지 아바타: partnerAvatarUrl 있으면 사용 */}
+                    <AvatarImage
+                      url={partnerAvatarUrl}
+                      alt={partnerName || msg.username}
+                      className="absolute inset-0 w-full h-full object-cover"
+                    />
+                    {!partnerAvatarUrl && initial}
                   </div>
                 )}
 
@@ -82,15 +183,19 @@ const DirectMessageUI = ({
 
                 {/* 내 아바타 */}
                 {isOwn && (
-                  <div className="w-8 h-8 bg-slate-600 rounded-full flex items-center justify-center text-white text-sm font-semibold">
-                    {myUsername?.charAt(0)?.toUpperCase() || "?"}
+                  <div className="w-8 h-8 bg-slate-600 rounded-full overflow-hidden flex items-center justify-center text-white text-sm font-semibold relative">
+                    <AvatarImage
+                      url={myAvatarUrl}
+                      alt={myUsername || "me"}
+                      className="absolute inset-0 w-full h-full object-cover"
+                    />
+                    {!myAvatarUrl && myInitial}
                   </div>
                 )}
               </div>
             );
           })}
 
-          {/* 스크롤 기준점 */}
           <div ref={messagesEndRef} />
         </div>
 

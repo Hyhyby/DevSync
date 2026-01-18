@@ -13,7 +13,7 @@ const messageRoutes = require("./routes/messageRoutes");
 const dmRoutes = require("./routes/dmRoutes");
 const serverInviteRoutes = require("./routes/serverInviteRoutes");
 const uploadRoutes = require("./routes/uploadRoutes");
-
+const sttRoutes = require("./routes/sttRoutes"); // ✅ 추가
 const app = express();
 const path = require("path");
 
@@ -28,7 +28,7 @@ app.use("/api/dms", dmRoutes);
 app.use("/api/auth", authRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/friends", friendRoutes);
-
+app.use("/api/stt", sttRoutes);
 // 🔹 서버 초대 라우트 먼저
 app.use("/api/servers", serverInviteRoutes);
 
