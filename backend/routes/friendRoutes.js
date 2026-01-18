@@ -30,7 +30,7 @@ router.post("/request", authenticateToken, async (req, res) => {
       // ✅ profile_image_url 포함
       const userCheck = await pool.query(
         "SELECT id, username, profile_image_url FROM users WHERE id = $1",
-        [targetUserId]
+        [targetUserId],
       );
       if (userCheck.rowCount === 0) {
         return res.status(404).json({ error: "해당 유저를 찾을 수 없습니다." });
@@ -40,7 +40,7 @@ router.post("/request", authenticateToken, async (req, res) => {
       // ✅ profile_image_url 포함
       const userCheck = await pool.query(
         "SELECT id, username, profile_image_url FROM users WHERE username = $1",
-        [identifier]
+        [identifier],
       );
       if (userCheck.rowCount === 0) {
         return res.status(404).json({ error: "존재하지 않는 아이디입니다." });
@@ -64,7 +64,7 @@ router.post("/request", authenticateToken, async (req, res) => {
         OR
         (user_index = $2 AND friend_index = $1)
       `,
-      [myId, targetUser.id]
+      [myId, targetUser.id],
     );
 
     if (existing.rowCount > 0) {
@@ -86,7 +86,7 @@ router.post("/request", authenticateToken, async (req, res) => {
       VALUES ($1, $2, 'pending')
       RETURNING user_index, friend_index, status, created_at
       `,
-      [myId, targetUser.id]
+      [myId, targetUser.id],
     );
     const requestRow = insert.rows[0];
 
@@ -107,7 +107,7 @@ router.post("/request", authenticateToken, async (req, res) => {
       // ✅ sender도 profile_image_url 포함
       const senderResult = await pool.query(
         "SELECT id, username, profile_image_url FROM users WHERE id = $1",
-        [myId]
+        [myId],
       );
       const sender = senderResult.rows[0];
 
@@ -125,7 +125,7 @@ router.post("/request", authenticateToken, async (req, res) => {
         }
 
         log.info(
-          `📨 FRIEND_REQUEST_EMIT from ${sender.username} to userId=${targetUser.id}`
+          `📨 FRIEND_REQUEST_EMIT from ${sender.username} to userId=${targetUser.id}`,
         );
       }
     } catch (socketErr) {
@@ -169,7 +169,7 @@ router.get("/", authenticateToken, async (req, res) => {
       WHERE f.status = 'accepted'
       ORDER BY u.username
       `,
-      [myId]
+      [myId],
     );
 
     // ✅ 프론트가 friend.profileImage로 쓰기 쉽게 변환
@@ -209,7 +209,7 @@ router.get("/requests", authenticateToken, async (req, res) => {
         AND f.status = 'pending'
       ORDER BY f.created_at DESC
       `,
-      [myId]
+      [myId],
     );
 
     // 내가 보낸 친구 요청
@@ -226,7 +226,7 @@ router.get("/requests", authenticateToken, async (req, res) => {
         AND f.status = 'pending'
       ORDER BY f.created_at DESC
       `,
-      [myId]
+      [myId],
     );
 
     // ✅ profileImage로 내려주기
@@ -273,7 +273,7 @@ router.post("/requests/accept", authenticateToken, async (req, res) => {
         AND status = 'pending'
       RETURNING *
       `,
-      [fromUserId, myId]
+      [fromUserId, myId],
     );
 
     if (result.rowCount === 0) {
@@ -313,7 +313,7 @@ router.post("/requests/accept", authenticateToken, async (req, res) => {
       }
 
       log.info(
-        `FRIEND_ACCEPT_EMIT to both users: fromUserId=${fromUserId}, toUserId=${myId}`
+        `FRIEND_ACCEPT_EMIT to both users: fromUserId=${fromUserId}, toUserId=${myId}`,
       );
     } catch (socketErr) {
       log.error("FRIEND_ACCEPT_SOCKET_ERROR", socketErr);
@@ -347,7 +347,7 @@ router.post("/requests/decline", authenticateToken, async (req, res) => {
         AND status = 'pending'
       RETURNING *
       `,
-      [fromUserId, myId]
+      [fromUserId, myId],
     );
 
     if (result.rowCount === 0) {
@@ -378,7 +378,7 @@ router.post("/requests/decline", authenticateToken, async (req, res) => {
       }
 
       log.info(
-        `FRIEND_DECLINE_EMIT: fromUserId=${fromUserId}, toUserId=${myId}`
+        `FRIEND_DECLINE_EMIT: fromUserId=${fromUserId}, toUserId=${myId}`,
       );
     } catch (socketErr) {
       log.error("FRIEND_DECLINE_SOCKET_ERROR", socketErr);

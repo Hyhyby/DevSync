@@ -38,6 +38,13 @@ const FriendsSidebar = ({
       return `${API_BASE}/${url}`;
     };
   }, []);
+  useEffect(() => {
+    const resolved = resolveImageUrl(user?.profileImage);
+    console.log("🖼️ PROFILE IMAGE URL =", resolved);
+    setPreviewImage(resolved);
+  }, [user, resolveImageUrl]);
+  console.log("API_BASE =", API_BASE);
+  console.log("resolved profile =", resolveImageUrl(user?.profileImage));
 
   // ✅ user 변경 시 서버에 저장된 프로필 이미지 반영
   useEffect(() => {
@@ -119,7 +126,7 @@ const FriendsSidebar = ({
               <img
                 src={previewImage}
                 alt="Profile"
-                className="w-full h-full object-cover"
+                className="absolute inset-0 w-full h-full object-cover block"
               />
             ) : (
               <span className="text-gray-400 text-sm">IMG</span>
@@ -178,12 +185,12 @@ const FriendsSidebar = ({
                   className="w-full p-2 rounded hover:bg-neutral-800 text-gray-300 hover:text-white transition-colors"
                 >
                   <div className="flex items-center gap-3">
-                    <div className="w-8 h-8 rounded-full bg-neutral-700 flex items-center justify-center text-[11px] text-gray-300 overflow-hidden">
+                    <div className="w-8 h-8 rounded-full bg-neutral-700 flex items-center justify-center text-[11px] text-gray-300 overflow-hidden relative">
                       {friendImg ? (
                         <img
                           src={friendImg}
                           alt={friend.username}
-                          className="w-full h-full object-cover"
+                          className="absolute inset-0 w-full h-full object-cover block"
                         />
                       ) : (
                         friend.username?.[0]?.toUpperCase() || "?"

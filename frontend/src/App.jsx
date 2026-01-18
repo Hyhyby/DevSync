@@ -76,7 +76,7 @@ function App() {
             path="/home"
             element={
               user ? (
-                <Home user={user} onLogout={handleLogout} />
+                <Home user={user} onLogout={handleLogout} setUser={setUser} />
               ) : (
                 <Navigate to="/login" />
               )

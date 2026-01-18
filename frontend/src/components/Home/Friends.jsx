@@ -15,7 +15,13 @@ import FriendsSidebar from "../ui/FriendsSidebar";
 import AddFriendModal from "../ui/AddFriendModal";
 import FriendRequestResultModal from "../ui/FriendRequestResultModal";
 
-const Friends = ({ user, logo, addFriendIcon, onLogout }) => {
+const Friends = ({
+  user,
+  logo,
+  addFriendIcon,
+  onLogout,
+  onUploadProfileImage,
+}) => {
   // 🔹 더미 데이터 (UI 테스트용)
   const dummyFriends = [
     { id: 1, username: "DevSyncUser" },
@@ -61,7 +67,7 @@ const Friends = ({ user, logo, addFriendIcon, onLogout }) => {
           "ngrok-skip-browser-warning": "true",
         },
       }),
-    [token]
+    [token],
   );
 
   // 🔹 친구 목록 불러오기
@@ -82,7 +88,7 @@ const Friends = ({ user, logo, addFriendIcon, onLogout }) => {
       console.error(
         "[Friends] /api/friends 실패:",
         err?.response?.status,
-        err?.response?.data || err?.message
+        err?.response?.data || err?.message,
       );
       // 실패 시 기존 값 유지
       setFriends((prev) => prev);
@@ -149,9 +155,9 @@ const Friends = ({ user, logo, addFriendIcon, onLogout }) => {
         const { dmId } = res.data;
 
         // 2) 새 창에서 DM 페이지 열기
-        const url = `${
-          window.location.origin
-        }/dm/${dmId}?u=${encodeURIComponent(friend.username)}`;
+        const url = `${window.location.origin}/dm/${dmId}?u=${encodeURIComponent(
+          friend.username,
+        )}`;
 
         window.open(url, "_blank", "width=900,height=600,noopener,noreferrer");
       } catch (err) {
@@ -159,7 +165,7 @@ const Friends = ({ user, logo, addFriendIcon, onLogout }) => {
         alert("DM을 생성하는 중 오류가 발생했습니다.");
       }
     },
-    [api]
+    [api],
   );
 
   const joinRoom = (friendId) => {
@@ -199,7 +205,7 @@ const Friends = ({ user, logo, addFriendIcon, onLogout }) => {
         });
       }
     },
-    [friendIdentifier, api]
+    [friendIdentifier, api],
   );
 
   return (
@@ -213,6 +219,7 @@ const Friends = ({ user, logo, addFriendIcon, onLogout }) => {
         onAddFriendClick={() => setShowAddFriend(true)}
         onJoinRoom={joinRoom}
         onLogout={onLogout}
+        onUploadProfileImage={onUploadProfileImage}
       />
 
       <AddFriendModal

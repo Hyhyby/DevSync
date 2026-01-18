@@ -26,7 +26,7 @@ const storage = multer.diskStorage({
       "..",
       "uploads",
       "profiles",
-      String(userId)
+      String(userId),
     );
     ensureDir(dest);
     cb(null, dest);
@@ -34,7 +34,7 @@ const storage = multer.diskStorage({
   filename: (_req, file, cb) => {
     const safe = (file.originalname || "profile.png").replace(
       /[^\w.\-() ]/g,
-      "_"
+      "_",
     );
     cb(null, `${Date.now()}-${safe}`);
   },
@@ -63,7 +63,7 @@ router.get("/search", authenticateToken, async (req, res) => {
       ORDER BY username ASC
       LIMIT $2
       `,
-      [`%${q}%`, limit]
+      [`%${q}%`, limit],
     );
 
     // 프론트에서 쓰기 쉽게 profileImage 키로 내려주기
@@ -78,6 +78,28 @@ router.get("/search", authenticateToken, async (req, res) => {
   } catch (err) {
     console.error("GET /api/users/search error:", err);
     res.status(500).json({ error: "Server error" });
+  }
+});
+// ✅ 업로드 파일 프록시 (ngrok 경고 우회용)
+// GET /api/users/files/*  -> backend/uploads/* 를 그대로 내려줌
+router.get("/files/*", async (req, res) => {
+  try {
+    const relPath = req.params[0]; // 예: "profiles/3/xxx.png"
+    const filePath = path.join(__dirname, "..", "uploads", relPath);
+
+    if (!fs.existsSync(filePath)) return res.status(404).end();
+
+    // 보안: 경로 탈출 방지(optional but good)
+    const uploadsRoot = path.join(__dirname, "..", "uploads");
+    const resolved = path.resolve(filePath);
+    if (!resolved.startsWith(path.resolve(uploadsRoot))) {
+      return res.status(400).json({ error: "Invalid path" });
+    }
+
+    return res.sendFile(resolved);
+  } catch (e) {
+    console.error("GET /api/users/files/* error:", e);
+    return res.status(500).end();
   }
 });
 
@@ -95,7 +117,7 @@ router.get("/:id", async (req, res) => {
       FROM users
       WHERE id = $1
       `,
-      [userId]
+      [userId],
     );
 
     if (rows.length === 0)
@@ -130,19 +152,19 @@ router.post(
       const userId = req.user.userId;
 
       // 브라우저에서 접근할 URL (정적서빙 필요: /uploads)
-      const relativeUrl = `/uploads/profiles/${userId}/${req.file.filename}`;
+      const proxiedUrl = `/api/users/files/profiles/${userId}/${req.file.filename}`;
 
       await pool.query(
         `UPDATE users SET profile_image_url = $1 WHERE id = $2`,
-        [relativeUrl, userId]
+        [proxiedUrl, userId],
       );
 
-      res.json({ profileImage: relativeUrl });
+      res.json({ profileImage: proxiedUrl });
     } catch (err) {
       console.error("POST /api/users/me/profile-image error:", err);
       res.status(500).json({ error: "Server error" });
     }
-  }
+  },
 );
 
 module.exports = router;
