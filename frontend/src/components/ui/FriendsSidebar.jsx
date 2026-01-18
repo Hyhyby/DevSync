@@ -1,5 +1,6 @@
 // src/components/Home/ui/FriendsSidebar.jsx
-import React, { useRef, useState, useEffect } from "react";
+import React, { useRef, useState, useEffect, useMemo } from "react";
+import { API_BASE } from "../../config"; // ✅ 경로가 다르면 맞춰줘 (예: ../../config)
 
 const FriendsSidebar = ({
   user,
@@ -10,36 +11,80 @@ const FriendsSidebar = ({
   onAddFriendClick,
   onJoinRoom,
   onLogout,
-  onUploadProfileImage, // (새로 추가됨) 부모 컴포넌트에서 이미지 업로드를 처리할 함수
+  onUploadProfileImage,
 }) => {
   const fileInputRef = useRef(null);
+
+  // previewImage에는 "로컬 objectURL" 또는 "서버 이미지 URL" 둘 다 들어갈 수 있음
   const [previewImage, setPreviewImage] = useState(null);
 
-  // user 정보가 변경되거나 초기 로드 시 기존 프로필 이미지가 있다면 설정 (user 객체에 profileImage 속성이 있다고 가정)
-  useEffect(() => {
-    if (user?.profileImage) {
-      setPreviewImage(user.profileImage);
-    }
-  }, [user]);
+  // ✅ objectURL 메모리 누수 방지용
+  const objectUrlRef = useRef(null);
 
-  // 프로필 영역 클릭 시 숨겨진 input 클릭 트리거
+  // ✅ 상대경로(/uploads/...) → 절대경로(API_BASE + ...)로 변환
+  const resolveImageUrl = useMemo(() => {
+    return (url) => {
+      if (!url) return null;
+      if (typeof url !== "string") return null;
+
+      // 이미 blob/objectURL이거나 http(s)면 그대로
+      if (url.startsWith("blob:")) return url;
+      if (url.startsWith("http://") || url.startsWith("https://")) return url;
+
+      // "/uploads/..." 같은 상대경로면 API_BASE 붙이기
+      if (url.startsWith("/")) return `${API_BASE}${url}`;
+
+      // 그 외(상대경로)도 일단 붙여줌
+      return `${API_BASE}/${url}`;
+    };
+  }, []);
+
+  // ✅ user 변경 시 서버에 저장된 프로필 이미지 반영
+  useEffect(() => {
+    // 기존 objectURL 정리
+    if (objectUrlRef.current) {
+      URL.revokeObjectURL(objectUrlRef.current);
+      objectUrlRef.current = null;
+    }
+
+    const next = resolveImageUrl(user?.profileImage);
+    setPreviewImage(next);
+  }, [user, resolveImageUrl]);
+
+  // 컴포넌트 언마운트 시 objectURL 정리
+  useEffect(() => {
+    return () => {
+      if (objectUrlRef.current) {
+        URL.revokeObjectURL(objectUrlRef.current);
+        objectUrlRef.current = null;
+      }
+    };
+  }, []);
+
   const handleProfileClick = () => {
-    fileInputRef.current.click();
+    fileInputRef.current?.click();
   };
 
-  // 파일 선택 시 처리
   const handleFileChange = (e) => {
-    const file = e.target.files[0];
-    if (file) {
-      // 1. 미리보기용 URL 생성 (즉각적인 UI 반영)
-      const objectUrl = URL.createObjectURL(file);
-      setPreviewImage(objectUrl);
+    const file = e.target.files?.[0];
+    if (!file) return;
 
-      // 2. 부모 컴포넌트로 파일 전달 (실제 서버 업로드 로직은 부모에서 처리 권장)
-      if (onUploadProfileImage) {
-        onUploadProfileImage(file);
-      }
+    // ✅ 기존 objectURL 정리
+    if (objectUrlRef.current) {
+      URL.revokeObjectURL(objectUrlRef.current);
+      objectUrlRef.current = null;
     }
+
+    // 1) 즉시 미리보기
+    const objectUrl = URL.createObjectURL(file);
+    objectUrlRef.current = objectUrl;
+    setPreviewImage(objectUrl);
+
+    // 2) 실제 업로드(부모에서 처리)
+    onUploadProfileImage?.(file);
+
+    // 같은 파일 다시 선택해도 onChange가 뜨게 초기화
+    e.target.value = "";
   };
 
   return (
@@ -56,16 +101,15 @@ const FriendsSidebar = ({
       {/* Profile */}
       <div className="p-4 border-b border-neutral-800 flex flex-col items-center gap-2">
         <div className="relative group">
-          {/* 숨겨진 파일 입력 필드 (PNG만 허용) */}
           <input
             type="file"
             ref={fileInputRef}
             onChange={handleFileChange}
-            accept="image/png"
+            // ✅ PNG만 고집하면 유지해도 됨. 일반적으로는 image/* 추천
+            accept="image/*"
             className="hidden"
           />
 
-          {/* 클릭 가능한 프로필 영역 */}
           <div
             onClick={handleProfileClick}
             className="w-16 h-16 rounded-full bg-neutral-700 flex items-center justify-center overflow-hidden cursor-pointer border-2 border-transparent group-hover:border-yellow-400 transition-all relative"
@@ -81,7 +125,6 @@ const FriendsSidebar = ({
               <span className="text-gray-400 text-sm">IMG</span>
             )}
 
-            {/* 호버 시 오버레이 효과 (변경 가능함을 시각적으로 표시) */}
             <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-30 transition-all flex items-center justify-center">
               <span className="text-white opacity-0 group-hover:opacity-100 text-xs font-bold">
                 EDIT
@@ -89,7 +132,6 @@ const FriendsSidebar = ({
             </div>
           </div>
 
-          {/* 온라인 상태 표시 등 */}
           <span className="absolute bottom-0 right-0 w-4 h-4 bg-green-500 border-2 border-neutral-900 rounded-full z-10" />
         </div>
 
@@ -126,32 +168,35 @@ const FriendsSidebar = ({
               to add one.
             </div>
           ) : (
-            friends.map((friend) => (
-              <button
-                key={friend.id}
-                onClick={() => onJoinRoom(friend.id)}
-                className="w-full p-2 rounded hover:bg-neutral-800 text-gray-300 hover:text-white transition-colors"
-              >
-                <div className="flex items-center gap-3">
-                  {/* 친구 프로필 (여기서는 로직 유지) */}
-                  <div className="w-8 h-8 rounded-full bg-neutral-700 flex items-center justify-center text-[11px] text-gray-300 overflow-hidden">
-                    {friend.profileImage ? (
-                      <img
-                        src={friend.profileImage}
-                        alt={friend.username}
-                        className="w-full h-full object-cover"
-                      />
-                    ) : (
-                      friend.username?.[0]?.toUpperCase() || "?"
-                    )}
-                  </div>
+            friends.map((friend) => {
+              const friendImg = resolveImageUrl(friend.profileImage);
 
-                  <span className="text-sm font-medium truncate">
-                    {friend.username}
-                  </span>
-                </div>
-              </button>
-            ))
+              return (
+                <button
+                  key={friend.id}
+                  onClick={() => onJoinRoom(friend.id)}
+                  className="w-full p-2 rounded hover:bg-neutral-800 text-gray-300 hover:text-white transition-colors"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="w-8 h-8 rounded-full bg-neutral-700 flex items-center justify-center text-[11px] text-gray-300 overflow-hidden">
+                      {friendImg ? (
+                        <img
+                          src={friendImg}
+                          alt={friend.username}
+                          className="w-full h-full object-cover"
+                        />
+                      ) : (
+                        friend.username?.[0]?.toUpperCase() || "?"
+                      )}
+                    </div>
+
+                    <span className="text-sm font-medium truncate">
+                      {friend.username}
+                    </span>
+                  </div>
+                </button>
+              );
+            })
           )}
         </div>
       </div>

@@ -61,7 +61,7 @@ function shouldEmitCaption(text) {
 
   // 헛자막으로 자주 나오는 특정 문구 차단(필요시 더 추가)
   const BLOCK_EXACT = new Set([
-    "시청해주셔서 감사합니다.",
+    "시청해주셔서 감사합니다",
     "구독과 좋아요 부탁드립니다",
     "MBC 뉴스 이덕영입니다.",
     "시청해주셔서 감사합니다.",

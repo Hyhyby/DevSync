@@ -22,44 +22,72 @@ function mapServer(row) {
 }
 
 /**
- * 📌 서버 생성
+ * 📌 서버 생성 (기본 채널 생성 포함)
  * POST /api/servers
  * body: { name, iconUrl }
  */
 router.post("/", authenticateToken, async (req, res) => {
+  const userId = req.user.userId;
   const { name, iconUrl } = req.body || {};
-  const ownerId = req.user.userId;
 
   if (!name || !name.trim()) {
     return res.status(400).json({ error: "Server name is required" });
   }
 
+  const client = await pool.connect();
   try {
-    // 서버 생성
-    const result = await pool.query(
+    await client.query("BEGIN");
+
+    const serverId = uuidv4();
+
+    // 1) servers 생성
+    const serverRes = await client.query(
       `
-      INSERT INTO servers (name, icon_url, owner_id)
-      VALUES ($1, $2, $3)
-      RETURNING id, name, icon_url, owner_id, created_at
+      INSERT INTO servers (id, name, owner_id, icon_url)
+      VALUES ($1, $2, $3, $4)
+      RETURNING id, name, owner_id, icon_url, created_at
       `,
-      [name.trim(), iconUrl || null, ownerId]
+      [serverId, name.trim(), userId, iconUrl || null]
     );
 
-    const server = result.rows[0];
-
-    // 서버 멤버(owner)로 추가
-    await pool.query(
+    // 2) server_members에 owner 추가
+    await client.query(
       `
       INSERT INTO server_members (server_id, user_id, role)
       VALUES ($1, $2, 'owner')
       `,
-      [server.id, ownerId]
+      [serverId, userId]
     );
 
-    return res.status(201).json(mapServer(server));
+    // 3) 기본 채널 생성 (#일반, 일반 음성 채널)
+    await client.query(
+      `
+      INSERT INTO server_channels (server_id, name, type, position, topic)
+      VALUES 
+        ($1, '일반', 'text', 0, ''),
+        ($1, '일반 음성 채널', 'voice', 0, '')
+      `,
+      [serverId]
+    );
+
+    await client.query("COMMIT");
+
+    // mapServer는 icon_url 키를 기대하니까 shape 맞춰서 반환
+    const row = serverRes.rows[0];
+    return res.status(201).json({
+      id: row.id,
+      name: row.name,
+      iconUrl: row.icon_url,
+      ownerId: row.owner_id,
+      createdAt: row.created_at,
+      role: "owner",
+    });
   } catch (err) {
-    log.error?.("SERVER_CREATE_ERR", err);
+    await client.query("ROLLBACK");
+    console.error("SERVER_CREATE_ERR", err);
     return res.status(500).json({ error: "Failed to create server" });
+  } finally {
+    client.release();
   }
 });
 
@@ -129,7 +157,7 @@ router.get("/:serverId", authenticateToken, async (req, res) => {
 });
 
 /**
- * 📌 서버 멤버 목록
+ * 📌 서버 멤버 목록 (✅ profileImage 포함)
  * GET /api/servers/:serverId/members
  */
 router.get("/:serverId/members", authenticateToken, async (req, res) => {
@@ -137,7 +165,7 @@ router.get("/:serverId/members", authenticateToken, async (req, res) => {
   const userId = req.user.userId;
 
   try {
-    // 먼저 요청한 유저가 이 서버의 멤버인지 확인
+    // 요청한 유저가 이 서버 멤버인지 확인
     const check = await pool.query(
       `
       SELECT 1
@@ -153,12 +181,13 @@ router.get("/:serverId/members", authenticateToken, async (req, res) => {
         .json({ error: "이 서버의 멤버가 아니라 멤버 목록을 볼 수 없습니다." });
     }
 
-    // 실제 멤버 목록
+    // ✅ profile_image_url 포함
     const result = await pool.query(
       `
       SELECT 
         u.id,
         u.username AS name,
+        u.profile_image_url,
         sm.role,
         sm.joined_at
       FROM server_members sm
@@ -176,6 +205,7 @@ router.get("/:serverId/members", authenticateToken, async (req, res) => {
       name: row.name,
       role: row.role,
       joinedAt: row.joined_at,
+      profileImage: row.profile_image_url, // ✅ 프론트에서 그대로 사용
     }));
 
     return res.json(members);
@@ -284,7 +314,7 @@ router.post("/:serverId/leave", authenticateToken, async (req, res) => {
   const userId = req.user.userId;
 
   try {
-    // 1. 서버 존재 여부 및 소유자 확인
+    // 서버 존재 여부 및 소유자 확인
     const serverCheck = await pool.query(
       `SELECT owner_id FROM servers WHERE id = $1`,
       [serverId]
@@ -294,7 +324,7 @@ router.post("/:serverId/leave", authenticateToken, async (req, res) => {
       return res.status(404).json({ error: "Server not found" });
     }
 
-    // 2. 소유자인지 확인 (소유자는 나갈 수 없음)
+    // 소유자는 나갈 수 없음
     if (serverCheck.rows[0].owner_id === userId) {
       return res.status(400).json({
         error:
@@ -302,20 +332,20 @@ router.post("/:serverId/leave", authenticateToken, async (req, res) => {
       });
     }
 
-    // 3. 멤버 삭제 (나가기 처리)
+    // 멤버 삭제 (나가기 처리)
     const result = await pool.query(
       `DELETE FROM server_members WHERE server_id = $1 AND user_id = $2`,
       [serverId, userId]
     );
 
-    // 삭제된 행이 없다면 (= 원래 멤버가 아니었다면)
     if (result.rowCount === 0) {
       return res.status(400).json({ error: "이 서버의 멤버가 아닙니다." });
     }
+
+    // 소켓: 멤버 업데이트 알림
     try {
       const io = getIo();
 
-      // 현재 서버 멤버들 user_id 목록
       const memberIdsRes = await pool.query(
         `SELECT user_id FROM server_members WHERE server_id = $1`,
         [serverId]
@@ -333,49 +363,11 @@ router.post("/:serverId/leave", authenticateToken, async (req, res) => {
     } catch (e) {
       console.error("LEAVE_SERVER_SOCKET_EMIT_ERROR", e);
     }
+
     return res.json({ message: "서버에서 성공적으로 나갔습니다." });
   } catch (err) {
     log.error?.("SERVER_LEAVE_ERR", err);
     return res.status(500).json({ error: "Failed to leave server" });
-  }
-});
-
-router.post("/", authenticateToken, async (req, res) => {
-  const userId = req.user.userId;
-  const { name, iconUrl } = req.body;
-  const client = await pool.connect();
-
-  try {
-    await client.query("BEGIN");
-
-    const serverId = uuidv4();
-    const serverRes = await client.query(
-      `
-      INSERT INTO servers (id, name, owner_id, icon_url)
-      VALUES ($1, $2, $3, $4)
-      RETURNING id, name, owner_id, icon_url, created_at
-      `,
-      [serverId, name, userId, iconUrl || null]
-    );
-
-    await client.query(
-      `
-  INSERT INTO server_channels (server_id, name, type, position, topic)
-  VALUES 
-    ($1, '일반', 'text', 0, ''),
-    ($1, '일반 음성 채널', 'voice', 0, '')
-`,
-      [serverId]
-    );
-
-    await client.query("COMMIT");
-    res.status(201).json(serverRes.rows[0]);
-  } catch (err) {
-    await client.query("ROLLBACK");
-    console.error("SERVER_CREATE_ERR", err);
-    res.status(500).json({ error: "Failed to create server" });
-  } finally {
-    client.release();
   }
 });
 

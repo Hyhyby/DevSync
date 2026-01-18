@@ -4,13 +4,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 export default function useVoiceChannel(socket) {
   const [activeVoiceChannelId, setActiveVoiceChannelId] = useState(null);
 
-  // (기존에 isSpeaking 쓰고 있다면 유지하고 싶어서 기본값만 둠)
   const [isSpeaking, setIsSpeaking] = useState(false);
 
   // ✅ 상대 speaking: peerSocketId -> boolean
   const [remoteSpeaking, setRemoteSpeaking] = useState({});
 
-  // ✅ 추가: 마이크 음소거, 출력 볼륨
+  // ✅ 마이크 음소거, 출력 볼륨
   const [micMuted, setMicMuted] = useState(false);
   const [outputVolume, setOutputVolume] = useState(0.8); // 0.0 ~ 1.0
   const [inputVolume, setInputVolume] = useState(1.0);
@@ -30,7 +29,7 @@ export default function useVoiceChannel(socket) {
   const micDestRef = useRef(null); // MediaStreamDestination
 
   // ✅ 자막 상태 (서버 Whisper 결과)
-  const [liveCaption, setLiveCaption] = useState(""); // (우리는 final 위주라 거의 안 씀)
+  const [liveCaption, setLiveCaption] = useState("");
   const [finalCaption, setFinalCaption] = useState(""); // 내 final(짧게)
   const [remoteCaptions, setRemoteCaptions] = useState({}); // 상대들
   const captionTimerRef = useRef(null);
@@ -44,18 +43,21 @@ export default function useVoiceChannel(socket) {
      ✅ Whisper(STT) : MediaRecorder (buffer) -> VAD end -> socket.emit("voice:audio-chunk")
      ========================= */
   const sttStreamRef = useRef(null);
-  const sttStreamOwnedRef = useRef(false); // ✅ 우리가 별도로 getUserMedia로 만든 stream인지
-  const mediaRecorderRef = useRef(null);
   const sttEnabledRef = useRef(false);
 
   const sttChunksRef = useRef([]); // Blob[]
   const silenceTimerRef = useRef(null); // setTimeout
-  const segmentTimerRef = useRef(null); // setInterval
-  const sttMimeRef = useRef("audio/webm"); // "audio/webm" or "audio/ogg"
+
+  // ✅ [수정] 발화 유효성 검사 플래그
+  // 버퍼가 쌓이는 동안 "진짜 말소리(RMS 임계값 초과)"가 한 번이라도 있었는지 체크
+  const hasSpeakingActivityRef = useRef(false);
+
+  const sttMimeRef = useRef("audio/webm");
   const sttIntervalRef = useRef(null);
 
+  const mediaRecorderRef = useRef(null);
+
   const pickSupportedMimeType = useCallback(() => {
-    // 브라우저마다 지원 mime이 다를 수 있어 fallback 처리
     const candidates = [
       "audio/webm;codecs=opus",
       "audio/webm",
@@ -65,7 +67,7 @@ export default function useVoiceChannel(socket) {
     for (const t of candidates) {
       if (window.MediaRecorder?.isTypeSupported?.(t)) return t;
     }
-    return ""; // 브라우저가 알아서 선택
+    return "";
   }, []);
 
   const stopWhisperSTT = useCallback(() => {
@@ -75,6 +77,7 @@ export default function useVoiceChannel(socket) {
     sttIntervalRef.current = null;
 
     sttChunksRef.current = [];
+    hasSpeakingActivityRef.current = false;
 
     try {
       const mr = mediaRecorderRef.current;
@@ -99,29 +102,45 @@ export default function useVoiceChannel(socket) {
       const cid = activeVoiceChannelIdRef.current;
       if (!cid) return;
 
-      // 음소거면 버퍼 버리고 종료(비용 방지)
+      // 음소거 상태면 버림
       if (micMuted) {
         sttChunksRef.current = [];
+        hasSpeakingActivityRef.current = false;
         return;
       }
 
       const chunks = sttChunksRef.current;
       if (!chunks.length) return;
 
-      // 한 발화(또는 한 세그먼트)로 합치기
+      // ✅ [핵심 수정] Whisper 환각 방지 로직
+      // 1. 이번 녹음 구간 동안 유의미한 볼륨(VAD)이 감지되지 않았다면 전송하지 않음 (단순 숨소리/배경음 무시)
+      if (!hasSpeakingActivityRef.current) {
+        console.log(
+          "[STT] Skipped flush: No speaking activity detected (Ghost audio prevention)"
+        );
+        sttChunksRef.current = [];
+        return;
+      }
+
+      // 2. 블롭 생성
       const mime = sttMimeRef.current || "audio/webm";
       const blob = new Blob(chunks, { type: mime });
       sttChunksRef.current = [];
+      hasSpeakingActivityRef.current = false; // 플래그 리셋
 
-      if (!blob || blob.size === 0) return;
+      // 3. 파일 크기가 너무 작으면(예: 0.5초 미만 잡음) 무시
+      if (blob.size < 1500) {
+        console.log("[STT] Skipped flush: Audio too short/small");
+        return;
+      }
 
       const ab = await blob.arrayBuffer();
 
       socket.emit("voice:audio-chunk", {
         channelId: String(cid),
         mimeType: mime,
-        audio: ab, // socket.io 바이너리 전송
-        isFinal: true, // ✅ flush 시점만 final
+        audio: ab,
+        isFinal: true, // flush 시점은 문장이 끝난 것으로 간주
       });
     } catch (e) {
       console.warn("[STT] flush failed:", e);
@@ -136,7 +155,7 @@ export default function useVoiceChannel(socket) {
     if (sttEnabledRef.current) return;
     sttEnabledRef.current = true;
 
-    // STT 전용 stream (raw mic)
+    // STT 전용 stream
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: {
         echoCancellation: true,
@@ -154,6 +173,7 @@ export default function useVoiceChannel(socket) {
       const mr = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
       mediaRecorderRef.current = mr;
       sttChunksRef.current = [];
+      hasSpeakingActivityRef.current = false; // 시작 시 초기화
 
       mr.ondataavailable = (e) => {
         if (!e.data || e.data.size === 0) return;
@@ -165,14 +185,23 @@ export default function useVoiceChannel(socket) {
       mr.onstop = async () => {
         try {
           if (!sttEnabledRef.current) return;
-          if (micMuted) return; // 비용 방지
+          if (micMuted) return;
           if (!sttChunksRef.current.length) return;
 
-          // ✅ stop까지 모은 chunks -> 하나의 “완전한 파일 blob”
+          // [수정] onstop 시점에도 환각 방지 로직 적용
+          if (!hasSpeakingActivityRef.current) {
+            sttChunksRef.current = [];
+            return;
+          }
+
           const blob = new Blob(sttChunksRef.current, {
             type: mr.mimeType || "audio/webm",
           });
           sttChunksRef.current = [];
+          hasSpeakingActivityRef.current = false;
+
+          // 너무 작은 파일 무시
+          if (blob.size < 1500) return;
 
           const ab = await blob.arrayBuffer();
           const u8 = new Uint8Array(ab);
@@ -180,80 +209,65 @@ export default function useVoiceChannel(socket) {
           socket.emit("voice:audio-chunk", {
             channelId: String(cid),
             mimeType: mr.mimeType || "audio/webm",
-            audio: u8, // ✅ Uint8Array로 보내기(서버에서 Buffer.from 가능)
+            audio: u8,
             isFinal: true,
           });
         } catch (err) {
           console.warn("[STT] send failed:", err);
         } finally {
-          // ✅ 다음 라운드 다시 시작
+          // 다음 라운드 다시 시작
           if (sttEnabledRef.current) {
             startRecorderOnce();
           }
         }
       };
 
-      mr.start(); // ✅ timeslice 없이 start
-      // ✅ 2초 후 stop -> onstop에서 전송 -> 다시 start
-      // (정확도/비용 밸런스: 2000~4000ms 권장)
+      mr.start();
+      // 안전장치: 3초가 지나면 강제로 잘라서 전송 (너무 길어지는 것 방지)
       setTimeout(() => {
         try {
           if (mr.state !== "inactive") mr.stop();
         } catch {}
-      }, 2500);
+      }, 2000);
     };
 
     startRecorderOnce();
-    console.log("[STT] Whisper STT started (stop/restart mode)", { cid });
+    console.log("[STT] Whisper STT started (Ghost protection enabled)", {
+      cid,
+    });
   }, [socket, pickSupportedMimeType, micMuted]);
 
-  // ✅ VAD 기반 "말 끝" 감지 → 800ms 무음 유지되면 flush
+  // ✅ VAD 기반 "말 끝" 감지 → 무음 유지되면 flush
   useEffect(() => {
     if (!activeVoiceChannelIdRef.current) return;
     if (!sttEnabledRef.current) return;
 
+    // 말하고 있는 중이면 타이머 해제 (계속 녹음)
     if (isSpeaking) {
       if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
       silenceTimerRef.current = null;
+
+      // ✅ [수정] 말하는 중이라고 감지되면, 이번 청크는 "유효함"으로 마킹
+      hasSpeakingActivityRef.current = true;
       return;
     }
 
+    // ✅ [수정] 무음 감지 조건을 더 어렵게(길게) 설정
+    // 기존 800ms -> 1500ms (1.5초)
+    // 이유: 잠깐 생각하느라 1초 정도 멈췄을 때 문장이 잘리는 것을 방지
     if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
     silenceTimerRef.current = setTimeout(() => {
       flushSttChunks();
-    }, 800);
+    }, 1500);
   }, [isSpeaking, flushSttChunks]);
 
   /* =========================
      ✅ voice:caption 수신
-     (서버가 whisper 결과를 이 이벤트로 뿌림)
      ========================= */
   useEffect(() => {
     if (!socket) return;
-    const BLOCK_EXACT = new Set([
-      "시청해주셔서 감사합니다",
-      "시청해주셔서 감사합니다.",
-      "시청해주셔서 감사합니다!",
-      "구독과 좋아요 부탁드립니다",
-    ]);
 
-    const shouldShowCaption = (text) => {
-      const t = String(text || "").trim();
-      if (!t) return false;
-      if (t.length < 2) return false;
-      if (t.length > 140) return false;
-      if (BLOCK_EXACT.has(t)) return false;
-      return true;
-    };
     const onCaption = (p) => {
-      if (!shouldShowCaption(p?.text)) {
-        return; // UI 업데이트 자체를 안 함
-      }
-      // p: { channelId, fromSocketId, fromUsername, text, isFinal, ts, ... }
-
-      // 내 자막: fromSocketId === socket.id 일 때만 "내 자막"으로 취급
-      // (HTTP sttRoutes에서 emit할 때 fromSocketId=null이면 여기서 상대처럼 보이니,
-      //  우리는 socket기반 STT만 쓰는 전제로 유지)
       if (p?.fromSocketId && p.fromSocketId === socket.id) {
         if (p.isFinal && p.text?.trim()) {
           setFinalCaption(p.text.trim());
@@ -266,7 +280,6 @@ export default function useVoiceChannel(socket) {
         return;
       }
 
-      // 상대 자막
       const key = p.fromSocketId || String(p.fromUserId || "unknown");
       setRemoteCaptions((prev) => {
         const cur = prev[key] || {
@@ -303,7 +316,7 @@ export default function useVoiceChannel(socket) {
   }, [socket]);
 
   /* =========================
-     오디오/RTC/VAD (기존 유지)
+     오디오/RTC/VAD
      ========================= */
   const ensureAudioCtx = useCallback(async () => {
     if (!audioCtxRef.current) {
@@ -334,7 +347,6 @@ export default function useVoiceChannel(socket) {
     return stream;
   }, []);
 
-  // ✅ raw mic -> GainNode -> destination.stream (이 stream을 RTC에 addTrack)
   const ensureMicPipeline = useCallback(async () => {
     await ensureMic();
     await ensureAudioCtx();
@@ -348,10 +360,8 @@ export default function useVoiceChannel(socket) {
     if (!ctx || !raw) return null;
 
     const source = ctx.createMediaStreamSource(raw);
-
     const gain = ctx.createGain();
     gain.gain.value = inputVolume;
-
     const dest = ctx.createMediaStreamDestination();
 
     source.connect(gain);
@@ -406,6 +416,7 @@ export default function useVoiceChannel(socket) {
         }
         const rms = Math.sqrt(sum / data.length);
 
+        // 상대방은 좀 더 민감하게(0.03) 보여줘도 됨
         const speaking = rms > 0.03;
         setRemoteSpeaking((prev) =>
           prev[peerId] === speaking ? prev : { ...prev, [peerId]: speaking }
@@ -445,23 +456,30 @@ export default function useVoiceChannel(socket) {
         sum += v * v;
       }
       const rms = Math.sqrt(sum / data.length);
-      const speaking = rms > 0.03;
+
+      // ✅ [수정] VAD 임계값 상향 조정 (0.03 -> 0.05)
+      // 배경 소음이나 작은 숨소리는 무시하고, 확실히 말할 때만 인식하도록 함
+      const speaking = rms > 0.05;
 
       setIsSpeaking((prev) => (prev === speaking ? prev : speaking));
+
+      // 만약 말하고 있다면 플래그 세팅 (Whisper 전송 허용)
+      if (speaking) {
+        hasSpeakingActivityRef.current = true;
+      }
+
       localVadRafRef.current = requestAnimationFrame(loop);
     };
 
     loop();
   }, [ensureAudioCtx]);
 
-  // ✅ 마이크 트랙 on/off
   const applyMicMuted = useCallback((muted) => {
     const stream = localStreamRef.current;
     if (!stream) return;
     stream.getAudioTracks().forEach((t) => (t.enabled = !muted));
   }, []);
 
-  // ✅ 원격 오디오 엘리먼트 볼륨 적용
   const applyOutputVolume = useCallback((v) => {
     const vol = Math.max(0, Math.min(1, v));
     document.querySelectorAll('[id^="remote-audio-"]').forEach((el) => {
@@ -575,7 +593,6 @@ export default function useVoiceChannel(socket) {
     });
   }, [socket, activeVoiceChannelId, micMuted]);
 
-  // socket 이벤트 핸들러
   useEffect(() => {
     if (!socket) return;
 
@@ -639,9 +656,6 @@ export default function useVoiceChannel(socket) {
     };
   }, [socket, ensureMic, createPC, closePeer, startLocalVAD]);
 
-  /* =========================
-     join/leave (WebSpeech 제거 + Whisper STT 시작/정지)
-     ========================= */
   const joinVoice = useCallback(
     async (channelId) => {
       if (!socket) return;
@@ -660,7 +674,6 @@ export default function useVoiceChannel(socket) {
 
       socket.emit("join-voice", { channelId: cid });
 
-      // ✅ Whisper STT 시작 (버퍼링 + 말 끝 flush)
       try {
         await startWhisperSTT();
       } catch (e) {
@@ -687,7 +700,6 @@ export default function useVoiceChannel(socket) {
     setActiveVoiceChannelId(null);
     setMicMuted(false);
 
-    // ✅ Whisper STT 정지
     stopWhisperSTT();
 
     stopAll();
