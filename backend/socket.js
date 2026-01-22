@@ -7,7 +7,10 @@ const { JWT_SECRET } = require("./config/network");
 const { isAllowedOrigin } = require("./config/cors");
 const { socketLogger, log } = require("./middleware/logger");
 const { loadRooms } = require("./utils/room");
-const { generateReply } = require("./services/botService");
+const {
+  generateReply,
+  analyzeUploadedImage,
+} = require("./services/botService");
 const BOT_USER_ID = Number(process.env.BOT_USER_ID || 9999999);
 const BOT_USERNAME = process.env.BOT_USERNAME || "DevSyncBot";
 const fs = require("fs");
@@ -597,6 +600,7 @@ function initSocket(server) {
         if (userId === BOT_USER_ID) return;
 
         const prompt = parseBotTrigger(text);
+
         if (!prompt) return;
 
         // 레이트리밋 (유저가 연타하면 비용 폭발 방지)
@@ -611,19 +615,157 @@ function initSocket(server) {
           });
           return;
         }
+        let reply = "";
 
-        // 최근 대화 컨텍스트 로드
-        const historyText = await loadRecentChannelHistory({
-          serverId: sid,
-          channelId,
-          limit: 40,
-        });
+        // ✅ 0) 날짜 지정이 있는지 먼저 확인 (예: "1월19일", "2026-01-19")
+        const targetDate = parseTargetDateFromPrompt(prompt);
 
-        // GPT 답변 생성
-        const reply = await generateReply({
-          historyText,
-          userPrompt: prompt,
-        });
+        if (targetDate) {
+          console.log("[BOT] date command detected:", targetDate, prompt);
+
+          const wantSummary = isSummaryCommand(prompt);
+          const wantImageOnly = !wantSummary;
+          // 날짜가 있는데 '요약' 키워드가 있으면 => 텍스트+이미지 요약
+          // 아니면 기존처럼 "그 날짜 이미지 분석"으로 취급
+
+          if (wantSummary) {
+            // ✅ 1) 그 날짜 텍스트 메시지 가져오기
+            const msgs = await loadChannelMessagesByKstDate({
+              serverId: sid,
+              channelId,
+              ...targetDate,
+            });
+
+            // ✅ 2) 그 날짜 이미지 여러 장 가져오기(최대 3장)
+            const imgs = await loadChannelImagesByKstDate({
+              serverId: sid,
+              channelId,
+              ...targetDate,
+              limit: 3,
+            });
+
+            console.log("[BOT] date msgs:", msgs.length);
+            console.log("[BOT] date imgs:", imgs.length);
+
+            if (msgs.length === 0 && imgs.length === 0) {
+              reply = `${targetDate.mo}월 ${targetDate.d}일에는 메시지나 이미지가 없어요.`;
+            } else {
+              // ✅ 3) 이미지 -> 텍스트 설명(짧게)
+              const imageSummaries = [];
+              for (const img of imgs) {
+                try {
+                  const desc = await analyzeUploadedImage({
+                    fileUrl: img.file_url,
+                    prompt: `
+이미지에 보이는 내용을 한국어로 짧게 설명해줘.
+- 불필요한 거절 문구는 쓰지 말고, 바로 설명만 해줘.
+- 출력은 한 단락(3~5줄)로.
+`.trim(),
+                  });
+                  imageSummaries.push(
+                    `[이미지: ${img.file_name}] ${desc}`.trim(),
+                  );
+                } catch (e) {
+                  console.error(
+                    "[BOT][VISION] date image analyze failed:",
+                    e?.message || e,
+                  );
+                  imageSummaries.push(`[이미지: ${img.file_name}] (분석 실패)`);
+                }
+              }
+
+              // ✅ 4) LLM 입력 컨텍스트 구성
+              const textBlock = msgs
+                .map((m) => {
+                  const name = m.is_bot ? BOT_USERNAME : m.username;
+                  return `${name}: ${m.content}`;
+                })
+                .join("\n");
+
+              const imageBlock = imageSummaries.length
+                ? imageSummaries.map((s) => `- ${s}`).join("\n")
+                : "(없음)";
+
+              const combinedContext = `
+[${targetDate.y}-${String(targetDate.mo).padStart(2, "0")}-${String(targetDate.d).padStart(2, "0")} 대화 로그]
+${textBlock || "(텍스트 없음)"}
+
+[같은 날짜의 이미지 요약]
+${imageBlock}
+`.trim();
+
+              // ✅ 5) 최종 요약 생성
+              reply = await generateReply({
+                historyText: combinedContext,
+                userPrompt: `${targetDate.mo}월 ${targetDate.d}일의 대화/회의 내용을 핵심만 요약해줘.`,
+              });
+            }
+          } else {
+            // ✅ 기존 동작 유지: "그 날짜의 최근 이미지 1장" 분석
+            const hit = await findLatestImageInChannelByKstDate({
+              serverId: sid,
+              channelId,
+              ...targetDate,
+            });
+
+            console.log("[BOT] date image:", hit);
+
+            if (!hit?.file_url) {
+              reply = `${targetDate.mo}월 ${targetDate.d}일에 업로드된 이미지를 찾지 못했어요. 그날 이미지가 올라갔는지 확인해줘!`;
+            } else {
+              try {
+                reply = await analyzeUploadedImage({
+                  fileUrl: hit.file_url,
+                  prompt: `
+이미지에 보이는 내용만 한국어로 설명해줘.
+- 불필요한 거절 문구는 쓰지 말고, 바로 설명만 해줘.
+1) 한 줄 요약
+2) 관찰(색/형태/텍스트)
+3) 맥락 추정(있다면)
+`.trim(),
+                });
+              } catch (e) {
+                console.error("[BOT][VISION] analyzeUploadedImage failed:", e);
+                reply =
+                  `이미지 분석 중 오류가 발생했어요.\n` +
+                  `- file_url: ${hit.file_url}\n` +
+                  `- error: ${e?.message || e}`;
+              }
+            }
+          }
+        } else if (isRecentImageCommand(prompt)) {
+          console.log("[BOT] recent-image command detected:", prompt);
+
+          const latest = await findLatestImageInChannel({
+            serverId: sid,
+            channelId,
+          });
+
+          console.log("[BOT] latest image:", latest);
+
+          if (!latest?.file_url) {
+            reply =
+              "최근에 업로드된 이미지를 찾지 못했어요. 이미지를 먼저 올려주세요!";
+          } else {
+            reply = await analyzeUploadedImage({
+              fileUrl: latest.file_url,
+              prompt: "이 이미지를 분석해줘. 핵심만 한국어로 정리해줘.",
+            });
+          }
+        } else {
+          console.log("[BOT] normal text reply:", prompt);
+
+          const historyText = await loadRecentChannelHistory({
+            serverId: sid,
+            channelId,
+            limit: 40,
+          });
+
+          reply = await generateReply({
+            historyText,
+            userPrompt: prompt,
+          });
+        }
 
         if (!reply) return;
 
@@ -693,6 +835,188 @@ function parseBotTrigger(text) {
   if (!t.startsWith(prefix)) return null;
   const prompt = t.slice(prefix.length).trim();
   return prompt.length ? prompt : null;
+}
+function isRecentImageCommand(prompt = "") {
+  const p = String(prompt).trim().toLowerCase();
+  if (!p) return false;
+
+  const hasRecent =
+    p.includes("최근") || p.includes("마지막") || p.includes("방금");
+  const hasImage =
+    p.includes("이미지") || p.includes("사진") || p.includes("짤");
+  const hasAnalyze =
+    p.includes("분석") ||
+    p.includes("설명") ||
+    p.includes("무슨") ||
+    p.includes("뭐");
+
+  return hasRecent && hasImage && hasAnalyze;
+}
+
+async function findLatestImageInChannel({ serverId, channelId }) {
+  const r = await pool.query(
+    `
+    SELECT f.file_url, f.file_name, f.mime_type
+    FROM channel_message_files f
+    JOIN channel_messages m ON m.id = f.message_id
+    WHERE m.server_id = $1
+      AND m.channel_id = $2
+      AND LOWER(f.mime_type) LIKE 'image/%'
+    ORDER BY m.id DESC
+    LIMIT 1
+    `,
+    [serverId, channelId],
+  );
+
+  return r.rows[0] || null;
+}
+function isSummaryCommand(prompt = "") {
+  const p = String(prompt || "")
+    .trim()
+    .toLowerCase();
+  if (!p) return false;
+
+  // '요약/정리/회의내용/대화내용/메시지들' 류면 요약으로 판단
+  const KEYWORDS = [
+    "요약",
+    "정리",
+    "회의",
+    "회의내용",
+    "회의 내용",
+    "대화",
+    "대화내용",
+    "대화 내용",
+    "메시지",
+    "메시지들",
+    "로그",
+    "기록",
+  ];
+
+  return KEYWORDS.some((k) => p.includes(k));
+}
+async function loadChannelMessagesByKstDate({ serverId, channelId, y, mo, d }) {
+  const mm = String(mo).padStart(2, "0");
+  const dd = String(d).padStart(2, "0");
+  const target = `${y}-${mm}-${dd}`;
+
+  const r = await pool.query(
+    `
+    SELECT
+      m.id,
+      m.content,
+      m.created_at,
+      u.username,
+      u.is_bot
+    FROM channel_messages m
+    JOIN users u ON u.id = m.user_id
+    WHERE m.server_id = $1
+      AND m.channel_id = $2
+      AND (m.created_at AT TIME ZONE 'Asia/Seoul')::date = $3::date
+      AND m.content IS NOT NULL
+      AND m.content <> ''
+    ORDER BY m.id ASC
+    `,
+    [serverId, channelId, target],
+  );
+
+  return r.rows;
+}
+async function loadChannelImagesByKstDate({
+  serverId,
+  channelId,
+  y,
+  mo,
+  d,
+  limit = 3,
+}) {
+  const mm = String(mo).padStart(2, "0");
+  const dd = String(d).padStart(2, "0");
+  const target = `${y}-${mm}-${dd}`;
+
+  const r = await pool.query(
+    `
+    SELECT
+      f.file_url,
+      f.file_name,
+      f.mime_type,
+      m.created_at,
+      m.id as message_id
+    FROM channel_message_files f
+    JOIN channel_messages m ON m.id = f.message_id
+    WHERE m.server_id = $1
+      AND m.channel_id = $2
+      AND LOWER(f.mime_type) LIKE 'image/%'
+      AND (m.created_at AT TIME ZONE 'Asia/Seoul')::date = $3::date
+    ORDER BY m.id ASC
+    LIMIT $4
+    `,
+    [serverId, channelId, target, limit],
+  );
+
+  return r.rows;
+}
+
+function parseTargetDateFromPrompt(prompt) {
+  const p = String(prompt || "").trim();
+
+  // 1) YYYY-MM-DD (예: 2026-01-19)
+  let m = p.match(/(\d{4})\s*[-/.]\s*(\d{1,2})\s*[-/.]\s*(\d{1,2})/);
+  if (m) {
+    const y = Number(m[1]);
+    const mo = Number(m[2]);
+    const d = Number(m[3]);
+    if (y >= 1970 && mo >= 1 && mo <= 12 && d >= 1 && d <= 31)
+      return { y, mo, d };
+  }
+
+  // 2) M월 D일 (예: 1월19일)
+  m = p.match(/(\d{1,2})\s*월\s*(\d{1,2})\s*일/);
+  if (m) {
+    const mo = Number(m[1]);
+    const d = Number(m[2]);
+    const y = new Date().getFullYear(); // 연도 생략 시 올해로
+    if (mo >= 1 && mo <= 12 && d >= 1 && d <= 31) return { y, mo, d };
+  }
+
+  // 3) M/D, M-D (예: 1/19, 1-19)
+  m = p.match(/(?:^|\s)(\d{1,2})\s*[-/]\s*(\d{1,2})(?:\s|$)/);
+  if (m) {
+    const mo = Number(m[1]);
+    const d = Number(m[2]);
+    const y = new Date().getFullYear();
+    if (mo >= 1 && mo <= 12 && d >= 1 && d <= 31) return { y, mo, d };
+  }
+
+  return null;
+}
+async function findLatestImageInChannelByKstDate({
+  serverId,
+  channelId,
+  y,
+  mo,
+  d,
+}) {
+  // targetDate: '2026-01-19'
+  const mm = String(mo).padStart(2, "0");
+  const dd = String(d).padStart(2, "0");
+  const target = `${y}-${mm}-${dd}`;
+
+  const r = await pool.query(
+    `
+    SELECT f.file_url, f.file_name, f.mime_type, m.id AS message_id, m.created_at
+    FROM channel_message_files f
+    JOIN channel_messages m ON m.id = f.message_id
+    WHERE m.server_id = $1
+      AND m.channel_id = $2
+      AND LOWER(f.mime_type) LIKE 'image/%'
+      AND (m.created_at AT TIME ZONE 'Asia/Seoul')::date = $3::date
+    ORDER BY m.id DESC
+    LIMIT 1
+    `,
+    [serverId, channelId, target],
+  );
+
+  return r.rows[0] || null;
 }
 
 // 채널별/유저별 과도 호출 방지 (간단 버전)

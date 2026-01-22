@@ -1,6 +1,10 @@
 // routes/uploadRoutes.js
 const express = require("express");
 const router = express.Router({ mergeParams: true });
+const { analyzeUploadedImage } = require("../services/botService");
+
+const BOT_USER_ID = Number(process.env.BOT_USER_ID || 9999999);
+const BOT_USERNAME = process.env.BOT_USERNAME || "DevSyncBot";
 
 const path = require("path");
 const fs = require("fs");
@@ -9,7 +13,13 @@ const multer = require("multer");
 const pool = require("../config/db");
 const { authenticateToken } = require("../middleware/auth");
 const { getIo } = require("../socket"); // socket.js에서 export 중 :contentReference[oaicite:1]{index=1}
-
+function parseBotTrigger(text) {
+  const t = (text || "").trim();
+  const prefix = "@DevSyncBot";
+  if (!t.startsWith(prefix)) return null;
+  const prompt = t.slice(prefix.length).trim();
+  return prompt.length ? prompt : null;
+}
 function ensureDir(p) {
   if (!fs.existsSync(p)) fs.mkdirSync(p, { recursive: true });
 }
@@ -18,7 +28,7 @@ function ensureDir(p) {
 async function assertServerMember(serverId, userId) {
   const r = await pool.query(
     `SELECT 1 FROM server_members WHERE server_id = $1 AND user_id = $2`,
-    [serverId, userId]
+    [serverId, userId],
   );
   return r.rowCount > 0;
 }
@@ -27,7 +37,7 @@ async function assertServerMember(serverId, userId) {
 async function assertChannelInServer(serverId, channelId) {
   const r = await pool.query(
     `SELECT 1 FROM server_channels WHERE id = $1 AND server_id = $2`,
-    [channelId, serverId]
+    [channelId, serverId],
   );
   return r.rowCount > 0;
 }
@@ -44,7 +54,7 @@ const storage = multer.diskStorage({
       "servers",
       String(serverId),
       "channels",
-      String(channelId)
+      String(channelId),
     );
     ensureDir(dest);
     cb(null, dest);
@@ -53,7 +63,7 @@ const storage = multer.diskStorage({
     // 파일명 충돌 방지
     const safeOriginal = (file.originalname || "file").replace(
       /[^\w.\-() ]/g,
-      "_"
+      "_",
     );
     const unique = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
     cb(null, `${unique}-${safeOriginal}`);
@@ -110,7 +120,7 @@ router.post(
         VALUES ($1, $2, $3, $4, $5)
         RETURNING id, created_at
         `,
-        [sid, cid, userId, text || "", messageType]
+        [sid, cid, userId, text || "", messageType],
       );
 
       const messageId = msgIns.rows[0].id;
@@ -129,7 +139,7 @@ router.post(
           VALUES ($1, $2, $3, $4, $5)
           RETURNING id, file_name, file_url, mime_type, file_size, created_at
           `,
-          [messageId, f.originalname, relativeUrl, f.mimetype, f.size]
+          [messageId, f.originalname, relativeUrl, f.mimetype, f.size],
         );
 
         fileRows.push(ins.rows[0]);
@@ -157,6 +167,57 @@ router.post(
         // 소켓이 죽어도 업로드는 성공일 수 있으니 무시(로그만)
         console.warn("UPLOAD_SOCKET_EMIT_WARN", e?.message || e);
       }
+      // =========================
+      // ✅ BOT: "첨부 이미지 + @DevSyncBot"면 그 이미지 분석
+      // =========================
+      try {
+        if (userId !== BOT_USER_ID && text) {
+          const botPrompt = parseBotTrigger(text);
+          if (botPrompt) {
+            // 첨부 중 이미지 1개 선택
+            const img = fileRows.find((r) =>
+              String(r.mime_type || "")
+                .toLowerCase()
+                .startsWith("image/"),
+            );
+
+            if (img?.file_url) {
+              const analysis = await analyzeUploadedImage({
+                fileUrl: img.file_url, // "/uploads/..."
+                prompt: botPrompt, // 사용자가 적은 프롬프트
+              });
+
+              if (analysis) {
+                // 봇 메시지 DB 저장
+                const savedBot = await pool.query(
+                  `
+                  INSERT INTO channel_messages (server_id, channel_id, user_id, content, message_type)
+                  VALUES ($1, $2, $3, $4, 'text')
+                  RETURNING id, created_at
+                  `,
+                  [sid, cid, BOT_USER_ID, analysis],
+                );
+
+                const botRow = savedBot.rows[0];
+
+                // 채널 룸으로 브로드캐스트 (텍스트 채널 룸이 cid로 join되어 있음)
+                const io = getIo();
+                io.to(String(cid)).emit("receive-message", {
+                  id: botRow.id,
+                  message: analysis,
+                  messageType: "text",
+                  files: [],
+                  userId: BOT_USER_ID,
+                  username: BOT_USERNAME,
+                  timestamp: botRow.created_at,
+                });
+              }
+            }
+          }
+        }
+      } catch (e) {
+        console.warn("UPLOAD_BOT_ANALYZE_WARN", e?.message || e);
+      }
 
       return res.status(201).json({
         id: messageId,
@@ -171,7 +232,7 @@ router.post(
       console.error("UPLOAD_MESSAGE_ERROR", err);
       return res.status(500).json({ error: "Failed to upload files/message" });
     }
-  }
+  },
 );
 
 module.exports = router;
